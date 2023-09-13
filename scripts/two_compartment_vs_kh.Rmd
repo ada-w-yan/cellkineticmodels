@@ -1,0 +1,478 @@
+---
+title: "Two compartment vs kinetic heterogeneity model"
+author: "Ada Yan"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    fig_caption: TRUE
+    keep_tex: yes
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, echo = FALSE)
+```
+
+```{r include = FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(deSolve)
+library(latex2exp)
+# load R package with model fitting functions
+devtools::load_all("~/git_repos/cellkineticmodels/") # change this to the directory of the git repository
+# working directory should be scripts/ relative to the directory of the git repository
+# i.e. the folder this vignette is in
+options(mc.cores = parallel::detectCores())
+rstan::rstan_options(auto_write = TRUE)
+set.seed(1)
+dir_name <- "two_compartment_vs_kh_files/"
+if(!dir.exists(dir_name)) dir.create(dir_name)
+quantiles_filename <- paste0(dir_name, "bar_p_quantiles.rds")
+loo_filename <- paste0(dir_name, "loo.rds")
+n_compartments <- c(1, 1.5, seq(2, 6))
+make_plots <- TRUE
+```
+
+```{r}
+id_pars <- list(frac = 0.032, delta = 0.064, b_w = 4.18)
+```
+
+```{r}
+model <- function(t, x, pars) {
+  if(t < 0) {
+    return(list(0))
+  }
+  with(as.list(c(x, pars)), {
+    calc_U <- function(t) {
+      if(t <= label_end) {
+        U <- frac * (1 - exp(-delta * t))
+      } else {
+        t_shift <- t - label_end
+        U <- calc_U(label_end) * exp(-delta * t_shift)
+      }
+      U
+    }
+    
+    U <- calc_U(t)
+    dLdt <- p * b_w * U - p * L
+    
+    return(list(dLdt))
+  })
+}
+
+solve_label_one_pop <- function(pars) {
+  yini <- c(L = 0)
+  t1 <- c(seq(0, 150))
+  out <- ode(yini, t1, model, pars) %>% as.data.frame %>% as_tibble
+  out
+}
+
+solve_label_multi_pop <- function(pars) {
+  solve_label_inner <- function(pop_idx) {
+    pars$p <- pars$p[pop_idx]
+    solve_label_one_pop(pars) %>%
+      mutate(pop_idx = as.character(pop_idx))
+  }
+  out <- lapply(seq_along(pars$p), solve_label_inner) %>%
+    do.call(rbind, .)
+  mean_label <- out %>%
+    group_by(time) %>%
+    summarise(L = sum(pars[["frac_pop"]] * L)) %>%
+    ungroup() %>%
+    mutate(pop_idx = "mean")
+  out <- bind_rows(out, mean_label)
+  out
+}
+```
+
+
+```{r}
+p1_vec <- c(0.720, 0.360, .24, .12, 0.036, 0.018, 0.0072)
+p2_vec <- c(0.0036, 0.016, 0.0072, 0.0108) %>% sort
+alpha1_vec <- seq(.1, .9, by = .2)
+
+sim_pars_grid <- expand_grid(p1 = p1_vec, p2 = p2_vec, alpha1 = alpha1_vec) %>%
+  filter(p1 > p2)
+sim_data_wrapper <- function(p1, p2, alpha1, eval = TRUE) {
+  sim_filename <- paste0(dir_name, "sim_data_", num2str(p1), "_",
+                         num2str(p2), "_", num2str(alpha1), "__body_water.rds")
+  if(!eval) {
+    return(sim_filename)
+  }
+  
+  sim_pars <- list(p = c(p1, p2), frac_pop = c(alpha1, 1 - alpha1), label_end = 49)
+  sim_pars <- c(sim_pars, id_pars, list(sigma_L = 0.005))
+  
+  t_vec <- seq_len(14) * 7
+  sol <- solve_label_multi_pop(sim_pars)
+  
+  sim_data <- sol %>%
+    filter(pop_idx == "mean" & time %in% t_vec) %>%
+    mutate(Lhat = vnapply(L, function(x) rnorm(1, x, sim_pars$sigma_L)))
+  saveRDS(list(pars = sim_pars, sol = sol, sim_data = sim_data), sim_filename)
+  sim_data
+}
+```
+
+```{r eval = TRUE}
+invisible(Map(function(x, y, z) sim_data_wrapper(x, y, z, eval = TRUE),
+              sim_pars_grid$p1, sim_pars_grid$p2, sim_pars_grid$alpha1))
+```
+
+```{r}
+p1_vec <- p1_vec %>% sort
+```
+
+```{r}
+fit_wrapper <- function(n_compartments, p1, p2, alpha1, eval = TRUE) {
+  sim_filename <- sim_data_wrapper(p1, p2, alpha1, eval = FALSE)
+  sim_data <- sim_filename %>%
+    readRDS
+  if(n_compartments >= 2) {
+    model_name <- paste0(n_compartments, "_compartment")
+  } else if(n_compartments == 1.5){
+    model_name <- "kinetic_heterogeneity"
+  } else {
+    model_name <- "single"
+  }
+  
+  fit_filename <- sim_filename %>% gsub("sim_data", paste0("fit_", model_name), .)
+  
+  if(!eval) {
+    return(fit_filename)
+  }
+  
+  if(n_compartments >= 2) {
+    fit_data_list <- c(list(T = nrow(sim_data$sim_data),
+                            ts = sim_data$sim_data$time,
+                            L = sim_data$sim_data$Lhat,
+                            sigma = sim_data$pars$sigma_L,
+                            n_pop = n_compartments,
+                            perfect_labelling = 0),
+                       sim_data$pars[c("label_end", "delta", "frac", "b_w")])
+    model <- "lymphocyte_model_fixed_U_n_compartments"
+  } else if(n_compartments == 1.5) {
+    fit_data_list <- c(list(T = nrow(sim_data$sim_data),
+                            ts = sim_data$sim_data$time,
+                            L = sim_data$sim_data$Lhat,
+                            sigma = sim_data$pars$sigma_L),
+                       sim_data$pars[c("label_end", "delta", "frac", "b_w")])
+    
+    model <- "lymphocyte_model_fixed_U_b_w"
+  } else {
+    fit_data_list <- c(list(T = nrow(sim_data$sim_data),
+                            ts = sim_data$sim_data$time,
+                            L = sim_data$sim_data$Lhat,
+                            sigma = sim_data$pars$sigma_L,
+                            n_pop = n_compartments,
+                            perfect_labelling = 0),
+                       sim_data$pars[c("label_end", "delta", "frac", "b_w")])
+    model <- "lymphocyte_model_fixed_U_homogeneous"
+  }
+  
+  fit <- fit_stan_defaults(model, fit_data_list, adapt_delta = 0.99)
+  saveRDS(fit, fit_filename)
+  invisible(fit)
+}
+```
+
+```{r}
+fit_grid <- expand_grid(n_compartments = n_compartments, 
+                        sim_pars_grid, eval = TRUE) %>%
+  select(-idx)
+```
+
+```{r eval = FALSE}
+apply_named_args(fit_grid, 1, fit_wrapper)
+```
+
+```{r eval = FALSE}
+get_bar_p_quantiles <- function(p1, p2, alpha1, n_compartments) {
+  fit <- fit_wrapper(n_compartments, p1, p2, alpha1, eval = FALSE) %>%
+    readRDS
+  if(n_compartments >= 2) {
+    bar_p_name <- "bar_p"
+  } else if (n_compartments == 1.5) {
+    bar_p_name <- "pb_w"
+  } else {
+    bar_p_name <- "p"
+  }
+  
+  p <- fit$fit %>% extract_fit(0, bar_p_name, drop = TRUE)
+  if(n_compartments == 1.5) {
+    p <- p / id_pars[["b_w"]]
+  }
+  quantiles <- quantile(p, probs = c(0.025, 0.5, 0.975))
+  bar_p <- p1 * alpha1 + p2 * (1 - alpha1)
+  quantiles <- c(quantiles, bar_p > quantiles[1] && bar_p < quantiles[3],
+                 quantiles[3] - quantiles[1])
+  names(quantiles) <- c("lower", "median", "upper", "accurate", "range")
+  quantiles
+}
+
+fit_grid <- fit_grid %>%
+  select(-eval)
+
+sim_pars_grid <- sim_pars_grid %>%
+  mutate(idx = seq_len(n())) %>%
+  select(idx, everything())
+
+bar_p_quantiles <- fit_grid %>%
+  apply_named_args(1, get_bar_p_quantiles) %>%
+  do.call(rbind, .) %>%
+  as_tibble %>%
+  bind_cols(fit_grid) %>%
+  full_join(sim_pars_grid) %>%
+  mutate(bar_p_true = p1 * alpha1 + p2 * (1 - alpha1),
+         accurate = as.logical(accurate))
+saveRDS(bar_p_quantiles, quantiles_filename)
+```
+
+```{r}
+bar_p_quantiles <- readRDS(quantiles_filename)
+plot_bar_p_quantiles <- function(bar_p_quantiles, x_var, row_var, col_var, n_compartments,
+                                 plot_slowest = FALSE) {
+  x_lab <- switch(x_var,
+                  p1 = "$p_1$",
+                  p2 = "$p_2$",
+                  alpha1 = "$\\alpha_1")
+  if(plot_slowest) {
+    bar_p_quantiles <- bar_p_quantiles %>%
+      mutate(bar_p_true = pmin(p1, p2))
+  }
+  
+  bar_p_quantiles %>%
+    rename(row_var1 = row_var, col_var1 = col_var) %>%
+    filter(n_compartments == !!n_compartments) %>%
+    ggplot(aes(x = .data[[x_var]])) +
+    facet_grid(row_var1~col_var1, scales = "free") +
+    geom_point(aes(y = median)) +
+    geom_errorbar(aes(ymin = lower, ymax = upper)) +
+    geom_line(aes(y = bar_p_true)) +
+    expand_limits(x = 0, y = 0) +
+    xlab(TeX(x_lab)) +
+    ylab("Estimated mean proliferation rate") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+}
+```
+
+```{r change_p1_kh_slowest, fig.width = 8, fig.height = 8}
+plot_bar_p_quantiles(bar_p_quantiles, "p1", "alpha1", "p2", 1.5, plot_slowest = TRUE)
+```
+
+```{r change_p1_kh, fig.width = 8, fig.height = 8}
+plot_bar_p_quantiles(bar_p_quantiles, "p1", "alpha1", "p2", 1.5)
+```
+
+```{r change_alpha1_kh, fig.width = 8, fig.height = 8}
+plot_bar_p_quantiles(bar_p_quantiles, "alpha1", "p1", "p2", 1.5)
+```
+
+```{r change_p2_kh, fig.height = 8, fig.width = 8}
+plot_bar_p_quantiles(filter(bar_p_quantiles, p1 > 0.0072), "p2", "p1", "alpha1", 1.5)
+```
+
+```{r change_p1_two_compartment, fig.width = 8, fig.height = 8}
+plot_bar_p_quantiles(bar_p_quantiles, "p1", "alpha1", "p2", 2)
+```
+
+```{r change_alpha1_two_compartment, fig.width = 8, fig.height = 8}
+plot_bar_p_quantiles(bar_p_quantiles, "alpha1", "p1", "p2", 2)
+```
+
+```{r change_p2_two_compartment, fig.height = 8, fig.width = 8}
+plot_bar_p_quantiles(filter(bar_p_quantiles, p1 > 0.0072), "p2", "p1", "alpha1", 2)
+```
+
+```{r}
+plot_single <- function(bar_p_quantiles, x_var, tag1) {
+  x_lab <- switch(x_var,
+                  p1 = "$p_1$",
+                  p2 = "$p_2$",
+                  alpha1 = "$\\alpha_1")
+  
+  bar_p_quantiles %>%
+    ggplot(aes(x = .data[[x_var]])) +
+    geom_point(aes(y = median)) +
+    geom_errorbar(aes(ymin = lower, ymax = upper)) +
+    geom_line(aes(y = bar_p_true)) +
+    expand_limits(x = 0, y = 0) +
+    xlab(TeX(x_lab)) +
+    ylab("Estimated mean proliferation rate") +
+    labs(tag = tag1) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    theme_bw()
+}
+```
+
+```{r change_p1_single, fig.width = 8, fig.height = 6}
+change_p1_kh <- plot_single(filter(bar_p_quantiles, n_compartments == 1.5, p2 == 0.016, 
+                                   abs(alpha1 - 0.7) < 1e-6), 
+                            "p1", "A")
+change_p2_kh <- plot_single(filter(bar_p_quantiles, n_compartments == 1.5, p1 == 0.018, alpha1 == 0.1), 
+                            "p2", "B")
+change_alpha1_kh <- plot_single(filter(bar_p_quantiles, n_compartments == 1.5, p1 == 0.72, p2 == 0.016), 
+                                "alpha1", "C")
+change_p1_two_compartment <- plot_single(filter(bar_p_quantiles, n_compartments == 2, p2 == 0.016, 
+                                                abs(alpha1 - 0.7) < 1e-6), 
+                                         "p1", "D")
+change_p2_two_compartment <- plot_single(filter(bar_p_quantiles, n_compartments == 2, p1 == 0.72, alpha1 == 0.1), 
+                                         "p2", "E")
+change_alpha1_two_compartment <- plot_single(filter(bar_p_quantiles, n_compartments == 2, p1 == 0.018, p2 == 0.016), 
+                                             "alpha1", "F")
+g1 <- gridExtra::grid.arrange(change_p1_kh, change_p2_kh, change_alpha1_kh,
+                              change_p1_two_compartment,
+                              change_p2_two_compartment, change_alpha1_two_compartment, nrow = 2)
+g1
+```
+
+```{r estimated_vs_true}
+bar_p_quantiles %>%
+  filter(n_compartments == 1.5) %>%
+  ggplot(aes(x = bar_p_true)) +
+  geom_point(aes(y = median)) +
+  geom_line(aes(y = bar_p_true), linetype = "dotted") +
+  geom_errorbar(aes(ymin = lower, ymax = upper)) +
+  scale_x_log10("True mean proliferation rate") +
+  scale_y_log10("Estimated mean proliferation rate") +
+  theme_bw() +
+  coord_fixed()
+```
+
+# Model comparison
+
+```{r}
+calc_and_compare_loos_incremental <- function(idx, p1, p2, alpha1, most_complex_model) {
+  n_compartments <- n_compartments[n_compartments <= most_complex_model]
+  fit_filenames <- vcapply(n_compartments, \(x) fit_wrapper(x, p1, p2, alpha1, eval = FALSE))
+  fit_list <- lapply(fit_filenames, readRDS)
+  
+  # calculate the loos
+  loos <- calc_and_compare_loos(fit_list)
+  loos <- loos$compare
+  # outputs
+  #   $compare
+  #        elpd_diff se_diff
+  # model3   0.0       0.0  
+  # model2  -0.1       0.3  
+  # model1 -12.7       6.3  
+  # calc_and_compare_loos assigns names model1, model2, model3, model 4 -- correct the names
+  loos <- loos %>%
+    as_tibble(rownames = "model") %>%
+    mutate(model = recode(model,
+                          model2 = "model1.5",
+                          model3 = "model2",
+                          model4 = "model3",
+                          model5 = "model4",
+                          model6 = "model5",
+                          model7 = "model6"))
+  loos
+} 
+
+model_comparison <- function(idx1) {
+  most_complex_model_idx <- 2
+  pars <- sim_pars_grid %>% filter(idx == idx1) %>% unlist
+  while(most_complex_model_idx < 8) {
+    most_complex_model <- n_compartments[most_complex_model_idx]
+    loos <- calc_and_compare_loos_incremental(idx1, pars[["p1"]], pars[["p2"]], pars[["alpha1"]],
+                                              most_complex_model = most_complex_model)
+    # if most_complex_model dies not have the highest elpd_loo, 
+    # or the difference is not big enough, return second most complex model
+    if(unlist(loos[1, "model"]) != paste0("model", most_complex_model) | 
+       (unlist(loos[2,"elpd_diff"]) / unlist(loos[2,"se_diff"]) > -1))  {
+      return(n_compartments[most_complex_model_idx - 1])
+    }
+    most_complex_model_idx <- most_complex_model_idx + 1
+  }
+  return(n_compartments[length(n_compartments)])
+}
+```
+
+```{r eval = FALSE}
+model_comparison_results <- vnapply(seq_len(nrow(sim_pars_grid)), model_comparison)
+saveRDS(model_comparison_results, paste0(dir_name, "model_comparison_results.rds"))
+```
+
+```{r}
+bar_p_quantiles <- bar_p_quantiles %>%
+  mutate(model = factor(n_compartments))
+levels(bar_p_quantiles$model) <- c(1, "kh", seq(2,6))
+```
+
+```{r}
+model_comparison_results <- readRDS(paste0(dir_name, "model_comparison_results.rds"))
+model_comparison_results_tibble <- tibble(selected_model = factor(model_comparison_results)) %>%
+  mutate(idx = seq_len(n()))
+levels(model_comparison_results_tibble$selected_model) <- c(1, "kh", seq(2,6))
+model_comparison_results_tibble <- model_comparison_results_tibble %>%
+  full_join(select(bar_p_quantiles, -n_compartments))
+```
+
+```{r}
+quantiles <- quantiles %>%
+  select(idx, p1, p2, alpha1, bar_p, everything()) %>%
+  rename(khlower = `1.5lower`,
+         khmedian = `1.5median`,
+         khupper = `1.5upper`,
+         khaccurate = `1.5accurate`)
+
+selected_model <- model_comparison_results_tibble %>%
+  select(idx, model) %>%
+  rename(selected_model = model)
+
+quantiles <- quantiles %>%
+  full_join(selected_model) %>%
+  select(idx, selected_model, everything())
+
+write_csv(quantiles, paste0(dir_name_out, "six_model_results.csv"))
+```
+
+```{r ranges_boxplot_mean_model_selection, fig.width = 3, fig.height = 3, fig.cap = "Width of 95% CIs across 125 simulations for the homogeneous model, the heterogeneous model, and model selection."}
+model_selection_range <- model_comparison_results_tibble %>%
+  filter(selected_model == model) %>%
+  select(idx, range) %>%
+  mutate(model = "model_selection")
+
+bar_p_quantiles %>%
+  select(idx, range, model) %>%
+  filter(model %in% c("1", "kh")) %>%
+  mutate(model = as.character(model)) %>%
+  bind_rows(model_selection_range) %>%
+  ggplot(aes(x = model, y = range)) +
+  geom_boxplot() +
+  theme_bw() +
+  xlab("Strategy") +
+  ylab("Width of 95% CI")
+```
+
+```{r error1, fig.width = 5, fig.cap = "Difference between median estimate and true value of mean proliferation rate for each model, across 125 simulations."}
+bar_p_quantiles <- bar_p_quantiles %>%
+  mutate(error = median - bar_p_true)
+ggplot(bar_p_quantiles, aes(x = model, y = error)) +
+  geom_boxplot() +
+  theme_bw() +
+  xlab("Model") +
+  ylab("Difference between median estimate \n and true value of mean proliferation rate")
+```
+
+```{r error12, fig.width = 3, fig.height = 3.5, fig.cap = "Difference between median estimate and true value of mean proliferation rate for the homogeneous, heterogeneous and model selection, across 125 simulations."}
+error_model_selection <- model_comparison_results_tibble %>%
+  filter(model == selected_model) %>%
+  mutate(error = median - bar_p_true) %>%
+  select(idx, error) %>%
+  mutate(model = "model_selection")
+bar_p_quantiles %>%
+  filter(model %in% c(1, "kh")) %>%
+  select(idx, error, model) %>%
+  mutate(model = as.character(model)) %>%
+  bind_rows(error_model_selection) %>%
+  ggplot(aes(x = model, y = error)) +
+  geom_boxplot() +
+  theme_bw() +
+  xlab("Strategy") +
+  ylab("Difference between median estimate and \n true value of mean proliferation rate")
+```
+
+```{r}
+```

@@ -1,0 +1,229 @@
+---
+title: "Replicate Westera et al. study"
+author: "Ada Yan"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    fig_caption: TRUE
+    keep_tex: yes
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, echo = FALSE)
+```
+
+# Perfect labelling
+
+## Westera et al. result: in the case of perfect labelling, increasing the number of compartments does not increase the width of the confidence intervals
+
+```{r include = FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(deSolve)
+# load R package with model fitting functions
+devtools::load_all("~/git_repos/cellkineticmodels/") # change this to the directory of the git repository
+# working directory should be scripts/ relative to the directory of the git repository
+# i.e. the folder this vignette is in
+
+options(mc.cores = parallel::detectCores())
+rstan::rstan_options(auto_write = TRUE)
+set.seed(1)
+dir_name <- "westera_bayesian_ci_files/"
+if(!dir.exists(dir_name)) {
+  dir.create(dir_name)
+}
+```
+
+```{r}
+model <- function(t, x, pars) {
+  if(t < 0) {
+    return(list(0))
+  }
+  with(as.list(c(x, pars)), {
+    U <- as.numeric(t <= label_end)
+    dLdt <- p * b_w * U - p * L
+    
+    return(list(dLdt))
+  })
+}
+
+solve_label_one_pop <- function(pars) {
+  yini <- c(L = 0)
+  t1 <- c(seq(0, 150))
+  out <- ode(yini, t1, model, pars) %>% as.data.frame %>% as_tibble
+  out
+}
+
+solve_label_multi_pop <- function(pars) {
+  solve_label_inner <- function(pop_idx) {
+    pars$p <- pars$p[pop_idx]
+    solve_label_one_pop(pars) %>%
+      mutate(pop_idx = as.character(pop_idx))
+  }
+  out <- lapply(seq_along(pars$p), solve_label_inner) %>%
+    do.call(rbind, .)
+  mean_label <- out %>%
+    group_by(time) %>%
+    summarise(L = sum(pars[["frac_pop"]] * L)) %>%
+    ungroup() %>%
+    mutate(pop_idx = "mean")
+  out <- bind_rows(out, mean_label)
+  out
+}
+```
+
+```{r}
+sim_pars <- list(p = c(0.720, 0.016), frac_pop = c(0.1, 0.9), label_end = 90)
+
+sim_data_wrapper <- function(sim_pars, eval = TRUE) {
+  sim_filename <- paste0(dir_name, "sim_data.rds")
+  if(!eval) {
+    return(sim_filename)
+  }
+  
+  sim_pars <- c(sim_pars, list(b_w = 1, sigma_L = 0.05))
+  
+  t_vec <- seq_len(21) * 7
+  sol <- solve_label_multi_pop(sim_pars)
+  
+  sim_data <- sol %>%
+    filter(pop_idx == "mean" & time %in% t_vec) %>%
+    mutate(Lhat = vnapply(L, function(x) rnorm(1, x, sim_pars$sigma_L)))
+  saveRDS(list(pars = sim_pars, sol = sol, sim_data = sim_data), sim_filename)
+  sim_data
+}
+```
+```{r eval = FALSE}
+invisible(sim_data_wrapper(sim_pars, eval = TRUE))
+```
+```{r}
+fit_wrapper <- function(n_compartments = 1, wide_prior, kh = FALSE, eval = TRUE) {
+  sim_filename <- sim_data_wrapper(eval = FALSE)
+  sim_data <- sim_filename %>%
+    readRDS
+  fit_filename <- sim_filename %>% gsub("sim_data", "fit", .)
+  
+  if(wide_prior) {
+    fit_filename <- fit_filename %>% gsub("/fit", "/fit_wide_prior", ., fixed = TRUE)
+  }
+  
+  if(n_compartments > 1) {
+    fit_filename <- fit_filename %>% gsub("/fit", paste0("/fit_", n_compartments, "_compartments"), ., fixed = TRUE)
+  }
+  
+  if(kh) {
+    fit_filename <- fit_filename %>% gsub("/fit", "/fit_kh", ., fixed = TRUE)
+  }
+  
+  if(!eval) {
+    return(fit_filename)
+  }
+  
+  sim_data$pars <- c(sim_data$pars, list(perfect_labelling = 1,
+                                         frac = .1,
+                                         delta = 1,
+                                         b_w = 1))
+  
+  fit_data_list <- c(list(T = nrow(sim_data$sim_data),
+                          ts = sim_data$sim_data$time,
+                          L = sim_data$sim_data$Lhat,
+                          sigma = sim_data$pars$sigma_L,
+                          n_pop = n_compartments),
+                     sim_data$pars[c("label_end", "delta", "frac", "b_w", "perfect_labelling")])
+  
+  model <- "lymphocyte_model_fixed_U_n_compartments"
+  
+  
+  if(kh) {
+    if(n_compartments > 1) {
+      stop("n_compartments must be 1 for kinetic heterogeneity")
+    }
+    model <- "lymphocyte_model_fixed_U_perfect_labelling"
+  } else if(n_compartments == 1) {
+    model <- "lymphocyte_model_fixed_U_homogeneous"
+  }
+  
+  seed1 <- 1
+  if(wide_prior) {
+    model <- paste0(model, "_wide_prior")
+  } else if(kh) {
+    seed1 <- 2
+  }
+  
+  fit <- fit_stan_defaults(model, fit_data_list, adapt_delta = 0.99, seed = seed1)
+  saveRDS(fit, fit_filename)
+  invisible(fit)
+}
+n_compartments_max <- 6
+```
+
+```{r eval = FALSE}
+
+lapply(seq_len(n_compartments_max), fit_wrapper, wide_prior = FALSE)
+lapply(seq_len(n_compartments_max), fit_wrapper, wide_prior = TRUE)
+lapply(c(FALSE, TRUE), fit_wrapper, n_compartments = 1, kh = TRUE)
+```
+
+```{r}
+plot_p_all <- function(n_compartments_vec, wide_prior) {
+  get_p <- function(n_compartments, kh = FALSE) {
+    fit <- fit_wrapper(n_compartments = n_compartments, 
+                       wide_prior = wide_prior,
+                       kh = kh,
+                       eval= FALSE) %>%
+      readRDS
+    sim_data <- sim_data_wrapper(eval = FALSE) %>% readRDS
+    
+    p <- fit$fit %>% extract_fit(0, c(ifelse(n_compartments == 1 || kh, "p", "bar_p"), "lp__")) %>%
+      as.data.frame %>% as_tibble %>%
+      mutate(n_compartments = ifelse(kh, "implicit", n_compartments))
+    if(n_compartments == 1 || kh) {
+      p <- p %>% rename(bar_p = "p")
+    }
+    
+    max_LL_p <- p %>% slice(which.max(lp__)) %>% pull(bar_p)
+    median_p <- median(p$bar_p)
+    true_p <- sum(sim_data$pars$p * sim_data$pars$frac_pop)
+    list(p = p, true_p = true_p)
+  }
+  
+  out <- lapply(n_compartments_vec, get_p)
+  out_kh <- get_p(1, TRUE)
+  out <- c(out, list(out_kh))
+  
+  p <- lapply(out, function(x) x$p) %>%
+    do.call(rbind, .) %>%
+    group_by(n_compartments) %>%
+    summarise(lower = quantile(bar_p, 0.025),
+              median = median(bar_p),
+              upper = quantile(bar_p, 0.975)) %>%
+    ungroup()
+  true_p <- out[[1]]$true_p
+  
+  tag1 <- if(wide_prior) "B" else "A"
+  ggplot(p, aes(x = n_compartments, group = n_compartments)) +
+    geom_point(aes(y = median)) +
+    geom_errorbar(aes(ymin = lower, ymax = upper)) +
+    geom_hline(yintercept = true_p) +
+    theme_bw() +
+    expand_limits(y = 0) +
+    labs(color = "") +
+    xlab("No. of compartments") +
+    ylab("Mean proliferation rate (/day)") +
+    labs(tag = tag1)
+}
+```
+
+```{r plot_p_all, fig.width = 5, fig.height = 3, fig.cap = "Posterior distributions for the mean proliferation rate, for different numbers of fitted compartments, with perfect labelling and a prior for p between 0 and 1.  kh denotes fitting a model with kinetic heterogeneity.\\label{fig:plot_p_all}"}
+plot_p_all(seq_len(n_compartments_max), wide_prior = FALSE)
+```
+
+```{r plot_p_all_wide_prior, fig.width = 5, fig.height = 3, fig.cap = "Posterior distributions for the mean proliferation rate, for different numbers of fitted compartments, with perfect labelling and a prior for p between 0 and 10.  kh denotes fitting a model with kinetic heterogeneity.\\label{fig:plot_p_all_wide_prior}"}
+plot_p_all(seq_len(n_compartments_max), wide_prior = TRUE)
+```
+
+```{r}
+```
+
+This report is brought to you by `kirlabelling` commit `r system("git -C ~/git_repos/kirlabelling/ rev-parse --short HEAD", intern = TRUE)` and `kirlabbook` commit `r system("git -C ~/2020/kirlabbook/ rev-parse --short HEAD", intern = TRUE)`.
