@@ -1,0 +1,555 @@
+---
+title: "Absolute and relative errors for two compartment vs kinetic heterogeneity model"
+author: "Ada Yan"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    fig_caption: TRUE
+    keep_tex: yes
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, echo = FALSE)
+```
+
+```{r include = FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(deSolve)
+library(latex2exp)
+# load R package with model fitting functions
+devtools::load_all("~/git_repos/cellkineticmodels/") # change this to the directory of the git repository
+# working directory should be scripts/ relative to the directory of the git repository
+# i.e. the folder this vignette is in
+options(mc.cores = parallel::detectCores())
+rstan::rstan_options(auto_write = TRUE)
+set.seed(1)
+dir_name <- "two_compartment_vs_kh_files/"
+if(!dir.exists(dir_name)) dir.create(dir_name)
+quantiles_filename <- paste0(dir_name, "bar_p_quantiles.rds")
+loo_filename <- paste0(dir_name, "loo.rds")
+n_compartments <- c(1, 1.5, seq(2, 6))#2)
+make_plots <- TRUE
+```
+
+```{r}
+id_pars <- list(frac = 0.032, delta = 0.064, b_w = 4.18)
+```
+
+```{r}
+model <- function(t, x, pars) {
+  if(t < 0) {
+    return(list(0))
+  }
+  with(as.list(c(x, pars)), {
+    calc_U <- function(t) {
+      if(t <= label_end) {
+        U <- frac * (1 - exp(-delta * t))
+      } else {
+        t_shift <- t - label_end
+        U <- calc_U(label_end) * exp(-delta * t_shift)
+      }
+      U
+    }
+    
+    U <- calc_U(t)
+    dLdt <- p * b_w * U - p * L
+    
+    return(list(dLdt))
+  })
+}
+
+solve_label_one_pop <- function(pars) {
+  yini <- c(L = 0)
+  t1 <- c(seq(0, 150))
+  out <- ode(yini, t1, model, pars) %>% as.data.frame %>% as_tibble
+  out
+}
+
+solve_label_multi_pop <- function(pars) {
+  solve_label_inner <- function(pop_idx) {
+    pars$p <- pars$p[pop_idx]
+    solve_label_one_pop(pars) %>%
+      mutate(pop_idx = as.character(pop_idx))
+  }
+  out <- lapply(seq_along(pars$p), solve_label_inner) %>%
+    do.call(rbind, .)
+  mean_label <- out %>%
+    group_by(time) %>%
+    summarise(L = sum(pars[["frac_pop"]] * L)) %>%
+    ungroup() %>%
+    mutate(pop_idx = "mean")
+  out <- bind_rows(out, mean_label)
+  out
+}
+```
+
+
+```{r}
+p1_vec <- c(0.720, 0.360, .24, .12, 0.036, 0.018, 0.0072)
+p2_vec <- c(0.0036, 0.016, 0.0072, 0.0108) %>% sort
+alpha1_vec <- seq(.1, .9, by = .2)
+
+sim_pars_grid <- expand_grid(p1 = p1_vec, p2 = p2_vec, alpha1 = alpha1_vec) %>%
+  filter(p1 > p2) %>%
+  mutate(idx = seq_len(n()))
+sim_data_wrapper <- function(p1, p2, alpha1, eval = TRUE) {
+  sim_filename <- paste0(dir_name, "sim_data_", num2str(p1), "_",
+                         num2str(p2), "_", num2str(alpha1), "__body_water.rds")
+  if(!eval) {
+    return(sim_filename)
+  }
+  
+  sim_pars <- list(p = c(p1, p2), frac_pop = c(alpha1, 1 - alpha1), label_end = 49)
+  sim_pars <- c(sim_pars, id_pars, list(sigma_L = 0.005))
+  
+  t_vec <- seq_len(14) * 7
+  sol <- solve_label_multi_pop(sim_pars)
+  
+  sim_data <- sol %>%
+    filter(pop_idx == "mean" & time %in% t_vec) %>%
+    mutate(Lhat = vnapply(L, function(x) rnorm(1, x, sim_pars$sigma_L)))
+  saveRDS(list(pars = sim_pars, sol = sol, sim_data = sim_data), sim_filename)
+  sim_data
+}
+```
+
+```{r eval = FALSE}
+invisible(Map(function(x, y, z) sim_data_wrapper(x, y, z, eval = TRUE),
+              sim_pars_grid$p1, sim_pars_grid$p2, sim_pars_grid$alpha1))
+```
+
+```{r}
+p1_vec <- p1_vec %>% sort
+```
+
+```{r}
+fit_wrapper <- function(n_compartments, p1, p2, alpha1, evaluate_likelihood = TRUE, eval = TRUE) {
+  sim_filename <- sim_data_wrapper(p1, p2, alpha1, eval = FALSE)
+  
+  if(n_compartments >= 2) {
+    model_name <- paste0(n_compartments, "_compartment")
+  } else if(n_compartments == 1.5){
+    model_name <- "kinetic_heterogeneity"
+  } else {
+    model_name <- "single"
+  }
+  
+  if(evaluate_likelihood) {
+    fit_filename <- sim_filename %>% gsub("sim_data", paste0("fit_", model_name), .)
+  } else {
+    fit_filename <- paste0(dirname(sim_filename), "/", n_compartments, "_compartments_prior.rds")
+  }
+  
+  if(!eval) {
+    return(fit_filename)
+  }
+  
+  sim_data <- sim_filename %>%
+    readRDS
+  
+  if(n_compartments >= 2) {
+    fit_data_list <- c(list(T = nrow(sim_data$sim_data),
+                            ts = sim_data$sim_data$time,
+                            L = sim_data$sim_data$Lhat,
+                            sigma = sim_data$pars$sigma_L,
+                            n_pop = n_compartments,
+                            perfect_labelling = 0),
+                       sim_data$pars[c("label_end", "delta", "frac", "b_w")])
+    model <- "lymphocyte_model_fixed_U_n_compartments"
+  } else if(n_compartments == 1.5) {
+    fit_data_list <- c(list(T = nrow(sim_data$sim_data),
+                            ts = sim_data$sim_data$time,
+                            L = sim_data$sim_data$Lhat,
+                            sigma = sim_data$pars$sigma_L),
+                       sim_data$pars[c("label_end", "delta", "frac", "b_w")])
+    
+    model <- "lymphocyte_model_fixed_U_b_w"
+  } else {
+    fit_data_list <- c(list(T = nrow(sim_data$sim_data),
+                            ts = sim_data$sim_data$time,
+                            L = sim_data$sim_data$Lhat,
+                            sigma = sim_data$pars$sigma_L,
+                            n_pop = n_compartments,
+                            perfect_labelling = 0),
+                       sim_data$pars[c("label_end", "delta", "frac", "b_w")])
+    model <- "lymphocyte_model_fixed_U_homogeneous"
+  }
+  
+  fit <- fit_stan_defaults(model, fit_data_list, adapt_delta = 0.99, evaluate_likelihood = evaluate_likelihood)
+  saveRDS(fit, fit_filename)
+  invisible(fit)
+}
+```
+
+```{r}
+fit_grid <- expand_grid(n_compartments = n_compartments, 
+                        sim_pars_grid, eval = TRUE) %>%
+  select(-idx)
+```
+
+```{r eval = FALSE}
+apply_named_args(fit_grid, 1, fit_wrapper)
+```
+
+# Plot priors
+
+```{r}
+prior_grid <- expand_grid(n_compartments = n_compartments,
+                          sim_pars_grid[1,], evaluate_likelihood = FALSE, eval = TRUE) %>%
+  select(-idx)
+```
+
+```{r eval = FALSE}
+apply_named_args(prior_grid, 1, fit_wrapper)
+```
+
+```{r plot_prior, fig.width = 8, fig.height = 3, fig.cap = "Prior distribution for the mean proliferation rate, when fitting a model with the number of compartments in the subplot title.", eval = FALSE}
+get_prior <- function(n_compartments) {
+  fit <- fit_wrapper(n_compartments, 0, 0, 0, evaluate_likelihood = FALSE, eval = FALSE) %>%
+    readRDS
+  
+  fit$fit %>% extract_fit(0, "bar_p", drop = TRUE) %>%
+    tibble::enframe(value = "bar_p") %>%
+    mutate(n_compartments = n_compartments)
+}
+
+priors <- lapply(n_compartments, get_prior) %>%
+  bind_rows() %>%
+  select(-name)
+
+ggplot(priors, aes(x = bar_p)) +
+  facet_wrap(~n_compartments, nrow = 1) +
+  geom_histogram() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) =
+  xlab("Mean proliferation rate")
+```
+
+```{r}
+fit_grid <- fit_grid %>%
+  select(-eval)
+
+sim_pars_grid <- sim_pars_grid %>%
+  select(idx, everything())
+```
+
+```{r eval = FALSE}
+get_bar_p_quantiles <- function(p1, p2, alpha1, n_compartments) {
+  fit <- fit_wrapper(n_compartments, p1, p2, alpha1, eval = FALSE) %>%
+    readRDS
+  if(n_compartments >= 2) {
+    bar_p_name <- "bar_p"
+  } else if (n_compartments == 1.5) {
+    bar_p_name <- "pb_w"
+  } else {
+    bar_p_name <- "p"
+  }
+  
+  p <- fit$fit %>% extract_fit(0, bar_p_name, drop = TRUE)
+  if(n_compartments == 1.5) {
+    p <- p / id_pars[["b_w"]]
+  }
+  quantiles <- quantile(p, probs = c(0.025, 0.5, 0.975))
+  bar_p <- p1 * alpha1 + p2 * (1 - alpha1)
+  quantiles <- c(quantiles, bar_p > quantiles[1] && bar_p < quantiles[3],
+                 quantiles[3] - quantiles[1])
+  names(quantiles) <- c("lower", "median", "upper", "accurate", "range")
+  quantiles
+}
+
+bar_p_quantiles <- fit_grid %>%
+  apply_named_args(1, get_bar_p_quantiles) %>%
+  do.call(rbind, .) %>%
+  as_tibble %>%
+  bind_cols(fit_grid) %>%
+  full_join(sim_pars_grid) %>%
+  mutate(bar_p_true = p1 * alpha1 + p2 * (1 - alpha1))
+saveRDS(bar_p_quantiles, quantiles_filename)
+```
+
+```{r}
+n_compartments <- c(1, 1.5, 2)
+bar_p_quantiles <- readRDS(quantiles_filename)
+```
+
+```{r}
+bar_p_quantiles <- bar_p_quantiles %>%
+  mutate(model = factor(n_compartments))
+levels(bar_p_quantiles$model) <- c(1, "kh", 2)
+```
+
+```{r error1, fig.width = 3, fig.height = 3, fig.cap = "Difference between median estimate and true value of mean proliferation rate for each model, across 125 simulations.\\label{fig:error1}"}
+bar_p_quantiles <- bar_p_quantiles %>%
+  mutate(abs_error = median - bar_p_true,
+         rel_error = abs(abs_error / bar_p_true) * 100)
+ggplot(bar_p_quantiles, aes(x = model, y = abs_error)) +
+  geom_boxplot() +
+  theme_bw() +
+  xlab("Model") +
+  ylab("Difference between median estimate \n and true value of mean proliferation rate")
+```
+
+```{r rel_error, fig.width = 3, fig.height = 3, fig.cap = "Percentage error in the median estimate of the mean proliferation rate for each model, across 125 simulations.\\label{fig:rel_error}"}
+ggplot(bar_p_quantiles, aes(x = model, y = rel_error)) +
+  geom_boxplot() +
+  theme_bw() +
+  expand_limits(y = 100) +
+  xlab("Model") +
+  ylab("Error in estimated \n mean proliferation rate (%)")
+```
+
+
+```{r percent_accurate, fig.width = 3, fig.height = 3, fig.cap = "Percentage error in the median estimate of the mean proliferation rate for each model, across 125 simulations.\\label{fig:percent_accurate}"}
+bar_p_quantiles %>%
+  group_by(model) %>%
+  summarise(percent_accurate = sum(accurate) / n() * 100) %>%
+  ggplot(aes(x = model)) +
+  geom_col(aes(y = percent_accurate)) +
+  theme_bw() +
+  expand_limits(y = 100) +
+  xlab("Model") +
+  ylab("Percentage of \n accurate estimates")
+```
+
+```{r}
+get_rel_error <- function(model) {
+  bar_p_quantiles %>%
+    filter(model == !!model) %>%
+    pull(rel_error)
+}
+
+get_abs_error <- function(model) {
+  bar_p_quantiles %>%
+    filter(model == !!model) %>%
+    pull(abs_error)
+}
+
+# wilcox.test(get_rel_error(1), get_rel_error("kh"), paired = TRUE)
+# wilcox.test(get_rel_error(1), get_rel_error(2), paired = TRUE)
+# wilcox.test(get_rel_error("kh"), get_rel_error(2), paired = TRUE)
+```
+
+Figures \ref{fig:error1} and \ref{fig:rel_error} show the absolute and relative (percentage) errors for a one-compartment model, implicit kinetic heterogeneity, and a two-compartment model respectively.  In the manuscript we had plotted the absolute error as Fig. 9A.  While the absolute errors tended to be larger for the implicit kinetic heterogeneity models compared to the two-compartment model (p = `r signif(wilcox.test(get_abs_error("kh"), get_abs_error(2), paired = TRUE)$p.value, digits = 2)`), the relative errors tended to be larger for the two-compartment model compared to the implicit kinetic heterogeneity model (p = `r signif(wilcox.test(get_rel_error("kh"), get_rel_error(2), paired = TRUE)$p.value, digits = 2)`).
+
+The current Figure and Supp. Figures 5-10 plot the raw parameter estimates and true values, which vary over orders of magnitude.  So when we make a visual comparison, we are seeing absolute and not relative errors. This makes the implicit kinetic heterogeneity model look bad.  However, the relative error is probably the more useful metric. (Figure \ref{fig:rel_error_scatter} shows that for the two-compartment model, the large relative errors mostly occur for very small values of the proliferation rate, which are hard to see the way the data is currently plotted.)
+
+We do note that even though the relative errors are larger for the two-compartment model compared to the implicit kinetic heterogeneity model, because the CIs are wider, the percentage of simulations where the true value is within the estimated 95% CI is larger for the two-compartment model (Fig. \ref{fig:percent_accurate}).
+
+```{r rel_error_scatter, fig.width = 8, fig.height = 4, fig.cap = "Mean proliferation rate vs. percentage error in its estimate for each model (subplots).\\label{fig:rel_error_scatter}"}
+ggplot(bar_p_quantiles, aes(x = bar_p_true, y = rel_error)) +
+  facet_wrap(~model, nrow = 1) +
+  geom_point() +
+  theme_bw() +
+  xlab("True value of mean proliferation rate") +
+  ylab("Error in estimate (%)")
+```
+
+```{r eval = FALSE, rel_error_scatter_prior, fig.width = 4, fig.height = 4, fig.cap = "Mean proliferation rate vs. percentage difference between the proliferation rate and the median value of the prior(0.5) for  model with 2 compartments."}
+bar_p_quantiles %>%
+  filter(model == 2) %>%
+  mutate(rel_error = abs(bar_p_true - .5)/bar_p_true * 100) %>%
+  ggplot(aes(x = bar_p_true, y = rel_error)) +
+  facet_wrap(~model, nrow = 1) +
+  geom_point() +
+  theme_bw() +
+  xlab("True value of mean proliferation rate") +
+  ylab("Error in estimate (%)")
+```
+
+```{r subset_p_low_alpha, fig.width = 8, fig.height = 4, fig.cap = "Percentage error in the median estimate of the mean proliferation rate for each model, for the subset of simulations where p1 < 10p2. Simulations are divided into subplots by the value of alpha1 (top of plots).\\label{fig:subset_p_low_alpha}"}
+bar_p_quantiles <- bar_p_quantiles %>%
+  mutate(p1_high = p1 > 10*p2)
+
+bar_p_quantiles %>%
+  filter(!p1_high) %>%
+  ggplot(aes(x = model, y = rel_error, group = model)) +
+  facet_wrap(~alpha1, nrow = 1) +
+  geom_boxplot() +
+  theme_bw() +
+  coord_cartesian(ylim = c(0, 100)) +
+  xlab("Model") +
+  ylab("Error in estimated \n mean proliferation rate (%)") +
+  ggtitle(latex2exp::TeX("$p_1 \\leq 10 p_2$"))
+# bar_p_quantiles %>%
+#   filter(model == 2) %>%
+#   ggplot(aes(x = p1_high, y = rel_error)) +
+#   geom_boxplot() +
+#   theme_bw() +
+#   expand_limits(y = 100) +
+#   xlab("Model") +
+#   ylab("Error in estimated \n mean proliferation rate")
+```
+
+
+In the main text, we discuss that the implicit kinetic heterogeneity model particularly struggles to infer the mean proliferation rate when $p_1 \gg p_2$ and $\alpha_1$ is small.  Figure \ref{fig:subset_p_low_alpha} shows the relative errors when $p_1 < 10 p_2$, confirming that the implicit kinetic heterogeneity model performs well in this context.  Figure \ref{fig:subset_p_high_alpha} shows the relative errors when $p_1 > 10 p_2$ for different values of $\alpha_1$, showing that the errors for the implicit kinetic heterogeneity model are large when $\alpha_1$ is small, but decrease when $\alpha_1$ is large.  The percentage of accurate simulations is shown in Figs. \ref{fig:percent_accurate_p1_low} and \ref{fig:percent_accurate_p1_high}.
+
+```{r subset_p_high_alpha, fig.width = 8, fig.height = 4, fig.cap = "Percentage error in the median estimate of the mean proliferation rate for each model, for the subset of simulations where p1 > 10p2. Simulations are divided into subplots by the value of alpha1 (top of plots).\\label{fig:subset_p_high_alpha}"}
+bar_p_quantiles %>%
+  filter(p1_high) %>%
+  ggplot(aes(x = model, y = rel_error, group = model)) +
+  facet_wrap(~alpha1, nrow = 1) +
+  geom_boxplot() +
+  theme_bw() +
+  coord_cartesian(ylim = c(0, 100)) +
+  xlab("Model") +
+  ylab("Error in estimated \n mean proliferation rate") +
+  ggtitle(latex2exp::TeX("$p_1 > 10 p_2$"))
+
+wilcox_test_wrapper <- function(bar_p_quantiles, model1, model2, p1_high, alpha1) {
+  model1_values <- bar_p_quantiles %>%
+    filter(model == !!model1 & p1_high == !!p1_high & alpha1 == !!alpha1) %>%
+    pull(rel_error)
+  model2_values <- bar_p_quantiles %>%
+    filter(model == !!model2 & p1_high == !!p1_high & alpha1 == !!alpha1) %>%
+    pull(rel_error)
+  wilcox.test(model1_values, model2_values, paired = TRUE)$p.value %>%
+    signif(digits = 2)
+}
+
+# wilcox_test_wrapper(bar_p_quantiles, "kh", 2, TRUE, .9)
+```
+
+```{r percent_accurate_p1_low, fig.width = 3, fig.height = 3, fig.cap = "Percentage of simulations for which the true value is in the estimated 95\\%CI, when p1 < 10p2.\\label{fig:percent_accurate_p1_low}"}
+bar_p_quantiles %>%
+  filter(!p1_high) %>%
+  group_by(model) %>%
+  summarise(percent_accurate = sum(accurate) / n() * 100) %>%
+  ggplot(aes(x = model)) +
+  geom_col(aes(y = percent_accurate)) +
+  theme_bw() +
+  expand_limits(y = 100) +
+  xlab("Model") +
+  ylab("Percentage of \n accurate estimates")
+```
+
+```{r percent_accurate_p1_high, fig.width = 8, fig.height = 3, fig.cap = "Percentage of simulations for which the true value is in the estimated 95\\%CI, when p1 > 10p2, stratified by alpha1.\\label{fig:percent_accurate_p1_high}"}
+bar_p_quantiles %>%
+  filter(p1_high) %>%
+  group_by(model, alpha1) %>%
+  summarise(percent_accurate = sum(accurate) / n() * 100) %>%
+  ggplot(aes(x = model)) +
+  facet_wrap(~alpha1, nrow = 1) +
+  geom_col(aes(y = percent_accurate)) +
+  theme_bw() +
+  expand_limits(y = 100) +
+  xlab("Model") +
+  ylab("Percentage of \n accurate estimates")
+```
+
+```{r get_individual_errors,  eval = FALSE}
+
+get_p1_p2_quantiles <- function(p1, p2, alpha1) {
+  fit <- fit_wrapper(n_compartments = 2, p1, p2, alpha1, eval = FALSE) %>%
+    readRDS
+  
+  # in Stan code, alpha1 is order, so p1 is the proliferation rate of the smallest
+  # compartment. However in the paper, p is defined as the fastest compartment -- fix
+  
+  extract_quantity <- function(par_name) {
+    p <- fit$fit %>% 
+      extract_fit(0, c("p[1]", "p[2]"))
+    func1 <- if(par_name == "p1") max else min
+    p <- apply(p, 1, func1)
+    quantiles <- quantile(p, probs = c(0.025, 0.5, 0.975))
+    true_value <- if(par_name == "p1") p1 else p2
+    abs_error <- quantiles[2] - true_value
+    rel_error <- abs(abs_error) / true_value * 100
+    abs_range <- quantiles[3] - quantiles[1]
+    rel_range <- abs_range / true_value
+    tibble(p1 = p1, p2 = p2, alpha1 = alpha1, par_name = par_name, 
+           abs_error = abs_error, rel_error = rel_error)
+  }
+  
+  lapply(c("p1", "p2"), extract_quantity) %>%
+    bind_rows()
+}
+```
+
+```{r eval = FALSE}
+p1_p2_quantiles <- sim_pars_grid %>%
+  select(-idx) %>%
+  apply_named_args(1, get_p1_p2_quantiles) %>%
+  bind_rows()
+saveRDS(p1_p2_quantiles, paste0(dir_name, "p1_p2_quantiles.rds"))
+```
+
+```{r eval = FALSE}
+p1_p2_quantiles <- readRDS(paste0(dir_name, "p1_p2_quantiles.rds"))
+```
+
+```{r eval = FALSE}
+p1_p2_quantiles %>%
+  filter(par_name == "p1") %>%
+  ggplot(aes(x = p1, y = abs_error, group = p1)) +
+  geom_boxplot()
+p1_p2_quantiles %>%
+  filter(par_name == "p1") %>%
+  ggplot(aes(x = p1, y = rel_error, group = p1)) +
+  geom_boxplot()
+
+p1_p2_quantiles %>%
+  filter(par_name == "p1") %>%
+  ggplot(aes(x = p1, y = rel_error, group = p1)) +
+  facet_wrap(~alpha1, nrow = 1) +
+  geom_boxplot()
+
+p1_p2_quantiles %>%
+  filter(par_name == "p2") %>%
+  ggplot(aes(x = p2, y = abs_error, group = p2)) +
+  geom_boxplot()
+p1_p2_quantiles %>%
+  filter(par_name == "p2") %>%
+  ggplot(aes(x = alpha1, y = rel_error, group = alpha1)) +
+  # facet_wrap(~alpha1, nrow = 1) +
+  geom_boxplot()# +
+# scale_y_log10()
+
+p1_p2_quantiles %>%
+  filter(par_name == "p2" & alpha1  == 0.9) %>%
+  ggplot(aes(x = p1, y = rel_error, group = p1)) +
+  # facet_wrap(~alpha1, nrow = 1) +
+  geom_boxplot()
+
+p1_p2_quantiles %>%
+  filter(par_name == "p2" & alpha1  == 0.9) %>%
+  mutate(p1_on_p2 = p1/p2)  %>%
+  ggplot(aes(x = p1_on_p2, y = rel_error)) +
+  # facet_wrap(~alpha1, nrow = 1) +
+  geom_point()
+```
+
+```{r eval = FALSE}
+bar_p_quantiles <- bar_p_quantiles %>%
+  mutate(rel_range = range / bar_p_true)
+ggplot(bar_p_quantiles, aes(x = model, y = range)) +
+  geom_boxplot()
+ggplot(bar_p_quantiles, aes(x = model, y = rel_range)) +
+  geom_boxplot()
+
+bar_p_quantiles %>%
+  filter(model == 2) %>%
+  ggplot(aes(x = p1, y = range, group = p1)) +
+  geom_boxplot()
+
+bar_p_quantiles %>%
+  filter(model == 2) %>%
+  ggplot(aes(x = p1, y = rel_range, group = p1)) +
+  geom_boxplot()
+```
+
+```{r eval = FALSE}
+all_quantiles <- p1_p2_quantiles %>%
+  select(-abs_error) %>%
+  pivot_wider(names_from = par_name, values_from = rel_error, names_prefix = "error_") %>%
+  full_join(filter(bar_p_quantiles, model == 2))
+
+all_quantiles %>%
+  mutate(rel_error = rel_error > 100) %>%
+  ggplot(aes(x = error_p1, y = error_p2)) +
+  geom_point(aes(color = rel_error))
+```
+
+```{r}
+```

@@ -92,7 +92,8 @@ p2_vec <- c(0.0036, 0.016, 0.0072, 0.0108) %>% sort
 alpha1_vec <- seq(.1, .9, by = .2)
 
 sim_pars_grid <- expand_grid(p1 = p1_vec, p2 = p2_vec, alpha1 = alpha1_vec) %>%
-  filter(p1 > p2)
+  filter(p1 > p2) %>%
+  mutate(idx = seq_len(n()))
 sim_data_wrapper <- function(p1, p2, alpha1, eval = TRUE) {
   sim_filename <- paste0(dir_name, "sim_data_", num2str(p1), "_",
                          num2str(p2), "_", num2str(alpha1), "__body_water.rds")
