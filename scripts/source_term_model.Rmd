@@ -88,7 +88,7 @@ data_list <- list(f = f,
                   N_samples = 1)
 ```
 
-```{r eval = TRUE}
+```{r eval = FALSE}
 pred <- make_pred(pred_model, data_list) # simulate fraction of label in upstream and downstream compartments
 
 term_names <- paste0(c("Chat" ,"Ehat"))
@@ -117,7 +117,7 @@ fit_data_list <- c(list(T = nrow(sim_data_homogeneous),
 model <- "lymphocyte_model_fixed_U_lognormal_noise"
 ```
 
-```{r eval = TRUE}
+```{r eval = FALSE}
 fit <- fit_stan_defaults(model, fit_data_list)
 saveRDS(fit, fit_homogeneous_filename)
 ```
@@ -195,7 +195,7 @@ N_samples <- 100
 par_names <- c("p_C", "p_E", "dstar_C", "dstar_E", "Delta", "two_k_minus_one", "C_on_E")
 ```
 
-```{r eval = TRUE}
+```{r eval = FALSE}
 # LHS sampling of transformed parameters from uniform distribution defined by range above
 raw_samples <- lhs::randomLHS(N_samples, length(raw_par_names))
 colnames(raw_samples) <- raw_par_names
@@ -210,7 +210,12 @@ for(i in raw_par_names) {
   raw_samples[,i] <- scale_samples(raw_samples[,i], par_ranges[,i])
 }
 
-raw_samples[,"k"] <- ifelse(k0, 0, floor(raw_samples[,"k"]))
+if(k0) {
+  raw_samples[,"k"] <- 0
+} else {
+  raw_samples[,"k"] <- floor(raw_samples[,"k"])
+}
+
 samples <- raw_samples
 colnames(samples) <- par_names
 
@@ -243,7 +248,8 @@ data_list <- c(data_list_pars,
                     T = length(pred_times),
                     ts = pred_times))
 ```
-```{r eval = TRUE}
+
+```{r eval = FALSE}
 pred <- make_pred(pred_model, data_list) %>%
   extract_pred(N_samples = N_samples, pred_name = "Ehat") %>%
   as.data.frame %>% as_tibble %>%
@@ -256,7 +262,7 @@ saveRDS(pred, pred_filename)
 
 ## Add noise to generate simulated data
 
-```{r eval = TRUE}
+```{r eval = FALSE}
 sim_data <- pred %>%
   mutate(Lhat = vnapply(Ehat, function(y) rlnorm(1, log(y), sigma_L)),
          Lhat = pmax(Lhat, 0))
@@ -269,7 +275,8 @@ saveRDS(sim_data, sim_data_filename)
 sim_data <- sim_data_filename %>% readRDS
 fit_single <- function(run1, eval = TRUE) {
   fit_filename <- paste0(dir_name, "fit", run1, ".rds")
-  if(!eval) {
+  if(file.exists(fit_filename) || !eval) {
+    # if(!eval) {
     return(fit_filename)
   }
   sim_data <- sim_data %>% filter(run == run1 & t > 0)
@@ -288,11 +295,11 @@ fit_single <- function(run1, eval = TRUE) {
 }
 ```
 
-```{r eval = TRUE}
+```{r eval = FALSE}
 invisible(lapply(seq_len(N_samples), fit_single, eval = TRUE))
 ```
 
-```{r eval = TRUE}
+```{r eval = FALSE}
 get_p_median <- function(run1) {
   fit <- run1 %>% fit_single(eval = FALSE) %>% readRDS
   fit <- as.matrix(fit$fit) %>% as.data.frame %>% as_tibble %>%
@@ -309,13 +316,15 @@ saveRDS(p, p_filename)
 
 ## Compile file with sampled and fitted values
 
-```{r eval = TRUE}
+```{r}
 samples <- readRDS(samples_filename) %>%
   as.data.frame %>% as_tibble %>%
   mutate(run = seq_len(nrow(samples)),
          turnover = (two_k_minus_one + 1) * Delta * C_on_E + p_E,
          production_rate_by_division = two_k_minus_one * Delta * C_on_E + p_E)
+```
 
+```{r eval = FALSE}
 get_sum_stats <- function(run1) {
   fit <- run1 %>% fit_single(eval = FALSE) %>% readRDS
   fit <- as.matrix(fit$fit) %>% as.data.frame %>% as_tibble %>%
@@ -389,6 +398,119 @@ dstar_plot <- make_plot(p, diag_tibble, "dstar_E", "dstar_median",
 
 g1 <- gridExtra::grid.arrange(proliferation_plot, turnover_plot, production_plot, dstar_plot, nrow = 1)
 ggsave(paste0(dir_name, "fit_one_compartment_lhs.pdf"), g1, width = 12, height = 3)
+```
+
+```{r}
+if(k0) {
+  p <- p %>%
+    mutate(est_error = (p_median - turnover)/turnover,
+           theor_error = (production_rate_by_division - turnover)/turnover)
+} else {
+  p <- p %>%
+    mutate(est_error = (p_median - p_E)/p_E,
+           theor_error = (production_rate_by_division - p_E)/p_E)
+}
+
+g <- make_plot(p, diag_tibble, "theor_error", "est_error",
+               "Theoretical error",
+               "Estimated error",
+               "")# +
+if(k0) g <- g + coord_cartesian(xlim = c(-1, 0), ylim = c(-1, 0))
+# coord_cartesian(xlim = c(0, 1), ylim = c(0, 1))
+ggsave(paste0(dir_name, "error.pdf"), g, width = 3, height = 3)
+g
+```
+
+```{r}
+p <- p %>%
+  mutate(Delta_C_on_E = Delta*C_on_E,
+         dstar_diff = Delta_C_on_E/production_rate_by_division,
+         dstar_error = (dstar_median - dstar_E)/dstar_E,
+         upper_bound_dstar_diff = p_C * C_on_E / p_median)
+
+ggplot(p, aes(x = upper_bound_dstar_diff, y = dstar_error)) + geom_point() +
+  coord_cartesian(xlim = c(0, 5))
+if(k0) {
+  dstar_diff_breaks <- c(0, 1, 2, 5, Inf)
+  upper_bound_dstar_diff_breaks <- c(0, 1, 2, 5, Inf)
+} else {
+  dstar_diff_breaks <- c(0, 1e-4, 1e-3, 1e-2, 1e-1, 1)
+  upper_bound_dstar_diff_breaks <- c(0, 1e-4, 1e-3, 1e-2, 1e-1, 1, Inf)
+}
+
+dstar_plot <- p %>%
+  select(dstar_diff, upper_bound_dstar_diff, dstar_error) %>%
+  mutate(dstar_cat = cut(dstar_diff, breaks = dstar_diff_breaks),
+         upper_bound_dstar_cat = cut(upper_bound_dstar_diff, breaks = upper_bound_dstar_diff_breaks),
+         dstar_error = abs(dstar_error) * 100)
+
+if(k0) {
+  x_lab <- "$r\\frac{\\bar{C}}{\\bar{E}}/p_E$"
+} else {
+  x_lab <- "$r\\frac{\\bar{C}}{\\bar{E}}/[(2^k - 1) r\\frac{\\bar{C}}{\\bar{E}} + p_E]$"
+}
+x_lab_upper <- "$p_C\\frac{\\bar{C}}{\\bar{E}}/\\hat{p_E}$"
+
+g <- ggplot(dstar_plot, aes(x = dstar_cat)) +
+  geom_boxplot(aes(y = dstar_error)) +
+  theme_bw() +
+  xlab(latex2exp::TeX(x_lab)) +
+  ylab(latex2exp::TeX("\\textrm{Error in} $\\hat{d^*_E} (\\%)$")) +
+  expand_limits(y = 100) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+ggsave(paste0(dir_name, "dstar_error.pdf"), g, width = 3, height = 3)
+
+g <- ggplot(dstar_plot, aes(x = upper_bound_dstar_cat)) +
+  geom_boxplot(aes(y = dstar_error)) +
+  theme_bw() +
+  xlab(latex2exp::TeX(x_lab_upper)) +
+  ylab(latex2exp::TeX("\\textrm{Error in} $\\hat{d^*_E} (\\%)$")) +
+  expand_limits(y = 100) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+ggsave(paste0(dir_name, "upper_dstar_error.pdf"), g, width = 3, height = 3)
+g
+```
+
+```{r unused plots, eval = FALSE}
+ggplot(p, aes(x = p_E, y = Delta_C_on_E)) + geom_point() +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  coord_cartesian(xlim = c(0, 0.05), ylim = c(0, 0.05)) 
+x_max <- p %>%
+  select(dstar_E, dstar_median) %>%
+  as.matrix %>%
+  max
+ggplot(p, aes(x = dstar_E, y = dstar_median)) +
+  geom_point(aes(color = dstar_diff)) +
+  geom_line(data = diag_tibble, aes(x = x, y = x)) +
+  theme_bw() +
+  coord_cartesian(xlim = c(0, x_max), ylim = c(0, x_max)) +
+  theme(aspect.ratio = 1) +
+  xlab("True value of disappearance rate \n of labelled cells (per day)") +
+  ylab(latex2exp::TeX("$\\hat{d^*_E}$ (per day)"))
+
+ggplot(p, aes(x = dstar_diff, y = dstar_error)) +
+  geom_point()# +
+  # coord_cartesian(xlim = c(0, 5))
+
+get_prctile_dstar_diff <- function(p, dstar_diff_thres) {
+  p %>%
+    mutate(dstar_error = -dstar_error) %>%
+    filter(dstar_diff <= dstar_diff_thres) %>%
+    pull(dstar_error) %>%
+    quantile(probs = 0.95)
+}
+
+roc_tibble <- tibble(dstar_diff = seq(.25, 5, by = .25)) %>%
+  mutate(roc = vapply(dstar_diff, get_prctile_dstar_diff, numeric(1), p = p))
+
+ggplot(roc_tibble, aes(x = dstar_diff, y = roc)) +
+  geom_line() +
+  coord_cartesian(xlim = c(0, 5), ylim = c(0, 1))
+```
+
+```{r}
+
 ```
 
 ```{r}

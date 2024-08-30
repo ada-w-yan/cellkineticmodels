@@ -94,6 +94,7 @@ alpha1_vec <- seq(.1, .9, by = .2)
 sim_pars_grid <- expand_grid(p1 = p1_vec, p2 = p2_vec, alpha1 = alpha1_vec) %>%
   filter(p1 > p2) %>%
   mutate(idx = seq_len(n()))
+
 sim_data_wrapper <- function(p1, p2, alpha1, eval = TRUE) {
   sim_filename <- paste0(dir_name, "sim_data_", num2str(p1), "_",
                          num2str(p2), "_", num2str(alpha1), "__body_water.rds")
@@ -115,7 +116,7 @@ sim_data_wrapper <- function(p1, p2, alpha1, eval = TRUE) {
 }
 ```
 
-```{r eval = TRUE}
+```{r eval = FALSE}
 invisible(Map(function(x, y, z) sim_data_wrapper(x, y, z, eval = TRUE),
               sim_pars_grid$p1, sim_pars_grid$p2, sim_pars_grid$alpha1))
 ```
@@ -138,7 +139,7 @@ fit_wrapper <- function(n_compartments, p1, p2, alpha1, eval = TRUE) {
   }
   
   fit_filename <- sim_filename %>% gsub("sim_data", paste0("fit_", model_name), .)
-  
+  # if(file.exists(fit_filename)) return(NULL)
   if(!eval) {
     return(fit_filename)
   }
@@ -191,6 +192,7 @@ apply_named_args(fit_grid, 1, fit_wrapper)
 get_bar_p_quantiles <- function(p1, p2, alpha1, n_compartments) {
   fit <- fit_wrapper(n_compartments, p1, p2, alpha1, eval = FALSE) %>%
     readRDS
+
   if(n_compartments >= 2) {
     bar_p_name <- "bar_p"
   } else if (n_compartments == 1.5) {
@@ -218,6 +220,8 @@ sim_pars_grid <- sim_pars_grid %>%
   mutate(idx = seq_len(n())) %>%
   select(idx, everything())
 
+fit_grid <- fit_grid %>%
+  filter(n_compartments <= 2)
 bar_p_quantiles <- fit_grid %>%
   apply_named_args(1, get_bar_p_quantiles) %>%
   do.call(rbind, .) %>%
@@ -293,12 +297,18 @@ plot_single <- function(bar_p_quantiles, x_var, tag1) {
                   p2 = "$p_2$",
                   alpha1 = "$\\alpha_1")
   
+  y_max <- switch(x_var,
+                  p1 = 1,
+                  p2 = 0.05,
+                  alpha1 = 1)
+  
   bar_p_quantiles %>%
     ggplot(aes(x = .data[[x_var]])) +
     geom_point(aes(y = median)) +
     geom_errorbar(aes(ymin = lower, ymax = upper)) +
     geom_line(aes(y = bar_p_true)) +
-    expand_limits(x = 0, y = 0) +
+    expand_limits(x = 0) +
+    coord_cartesian(ylim = c(0, y_max)) +
     xlab(TeX(x_lab)) +
     ylab("Estimated mean proliferation rate") +
     labs(tag = tag1) +
@@ -318,9 +328,9 @@ change_alpha1_kh <- plot_single(filter(bar_p_quantiles, n_compartments == 1.5, p
 change_p1_two_compartment <- plot_single(filter(bar_p_quantiles, n_compartments == 2, p2 == 0.016, 
                                                 abs(alpha1 - 0.7) < 1e-6), 
                                          "p1", "D")
-change_p2_two_compartment <- plot_single(filter(bar_p_quantiles, n_compartments == 2, p1 == 0.72, alpha1 == 0.1), 
+change_p2_two_compartment <- plot_single(filter(bar_p_quantiles, n_compartments == 2, p1 == 0.018, alpha1 == 0.1), 
                                          "p2", "E")
-change_alpha1_two_compartment <- plot_single(filter(bar_p_quantiles, n_compartments == 2, p1 == 0.018, p2 == 0.016), 
+change_alpha1_two_compartment <- plot_single(filter(bar_p_quantiles, n_compartments == 2, p1 == 0.72, p2 == 0.016), 
                                              "alpha1", "F")
 g1 <- gridExtra::grid.arrange(change_p1_kh, change_p2_kh, change_alpha1_kh,
                               change_p1_two_compartment,
@@ -328,7 +338,7 @@ g1 <- gridExtra::grid.arrange(change_p1_kh, change_p2_kh, change_alpha1_kh,
 g1
 ```
 
-```{r estimated_vs_true}
+```{r eval = FALSE, estimated_vs_true}
 bar_p_quantiles %>%
   filter(n_compartments == 1.5) %>%
   ggplot(aes(x = bar_p_true)) +
@@ -343,7 +353,7 @@ bar_p_quantiles %>%
 
 # Model comparison
 
-```{r}
+```{r eval = FALSE}
 calc_and_compare_loos_incremental <- function(idx, p1, p2, alpha1, most_complex_model) {
   n_compartments <- n_compartments[n_compartments <= most_complex_model]
   fit_filenames <- vcapply(n_compartments, \(x) fit_wrapper(x, p1, p2, alpha1, eval = FALSE))
@@ -401,7 +411,7 @@ bar_p_quantiles <- bar_p_quantiles %>%
 levels(bar_p_quantiles$model) <- c(1, "kh", seq(2,6))
 ```
 
-```{r}
+```{r eval = FALSE}
 model_comparison_results <- readRDS(paste0(dir_name, "model_comparison_results.rds"))
 model_comparison_results_tibble <- tibble(selected_model = factor(model_comparison_results)) %>%
   mutate(idx = seq_len(n()))
@@ -410,7 +420,7 @@ model_comparison_results_tibble <- model_comparison_results_tibble %>%
   full_join(select(bar_p_quantiles, -n_compartments))
 ```
 
-```{r}
+```{r eval = FALSE}
 quantiles <- quantiles %>%
   select(idx, p1, p2, alpha1, bar_p, everything()) %>%
   rename(khlower = `1.5lower`,
@@ -429,7 +439,7 @@ quantiles <- quantiles %>%
 write_csv(quantiles, paste0(dir_name_out, "six_model_results.csv"))
 ```
 
-```{r ranges_boxplot_mean_model_selection, fig.width = 3, fig.height = 3, fig.cap = "Width of 95% CIs across 125 simulations for the homogeneous model, the heterogeneous model, and model selection."}
+```{r eval = FALSE, ranges_boxplot_mean_model_selection, fig.width = 3, fig.height = 3, fig.cap = "Width of 95% CIs across 125 simulations for the homogeneous model, the heterogeneous model, and model selection."}
 model_selection_range <- model_comparison_results_tibble %>%
   filter(selected_model == model) %>%
   select(idx, range) %>%
@@ -447,7 +457,7 @@ bar_p_quantiles %>%
   ylab("Width of 95% CI")
 ```
 
-```{r error1, fig.width = 5, fig.cap = "Difference between median estimate and true value of mean proliferation rate for each model, across 125 simulations."}
+```{r eval = FALSE, error1, fig.width = 5, fig.cap = "Difference between median estimate and true value of mean proliferation rate for each model, across 125 simulations."}
 bar_p_quantiles <- bar_p_quantiles %>%
   mutate(error = median - bar_p_true)
 ggplot(bar_p_quantiles, aes(x = model, y = error)) +
@@ -457,7 +467,7 @@ ggplot(bar_p_quantiles, aes(x = model, y = error)) +
   ylab("Difference between median estimate \n and true value of mean proliferation rate")
 ```
 
-```{r error12, fig.width = 3, fig.height = 3.5, fig.cap = "Difference between median estimate and true value of mean proliferation rate for the homogeneous, heterogeneous and model selection, across 125 simulations."}
+```{r eval = FALSE, error12, fig.width = 3, fig.height = 3.5, fig.cap = "Difference between median estimate and true value of mean proliferation rate for the homogeneous, heterogeneous and model selection, across 125 simulations."}
 error_model_selection <- model_comparison_results_tibble %>%
   filter(model == selected_model) %>%
   mutate(error = median - bar_p_true) %>%
