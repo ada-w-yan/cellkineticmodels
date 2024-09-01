@@ -27,10 +27,8 @@ rstan::rstan_options(auto_write = TRUE)
 set.seed(1)
 dir_name <- "two_compartment_vs_kh_files/"
 if(!dir.exists(dir_name)) dir.create(dir_name)
-quantiles_filename <- paste0(dir_name, "bar_p_quantiles.rds")
-loo_filename <- paste0(dir_name, "loo.rds")
+quantiles_filename <- paste0(dir_name, "bar_p_quantiles_wide_prior.rds")
 n_compartments <- c(1, 1.5, 2)
-make_plots <- TRUE
 ```
 
 ```{r}
@@ -127,8 +125,7 @@ p1_vec <- p1_vec %>% sort
 ```{r}
 fit_wrapper <- function(n_compartments, p1, p2, alpha1, prior_width, eval = TRUE) {
   sim_filename <- sim_data_wrapper(p1, p2, alpha1, eval = FALSE)
-  sim_data <- sim_filename %>%
-    readRDS
+  
   if(n_compartments >= 2) {
     model_name <- paste0(n_compartments, "_compartment")
   } else if(n_compartments == 1.5){
@@ -138,11 +135,14 @@ fit_wrapper <- function(n_compartments, p1, p2, alpha1, prior_width, eval = TRUE
   }
   
   fit_filename <- sim_filename %>% gsub("sim_data", paste0("fit_", model_name, "_prior_width_", prior_width), .)
+  if(prior_width == 1) fit_filename <- fit_filename %>% gsub(paste0("_prior_width_", prior_width), "", .)
   
-  if(!eval) {
+  if(file.exists(fit_filename) | !eval) {
     return(fit_filename)
   }
   
+  sim_data <- sim_filename %>%
+    readRDS
   if(n_compartments >= 2) {
     fit_data_list <- c(list(T = nrow(sim_data$sim_data),
                             ts = sim_data$sim_data$time,
@@ -192,6 +192,67 @@ fit_grid <- expand_grid(n_compartments = n_compartments,
 apply_named_args(fit_grid, 1, fit_wrapper)
 ```
 
+```{r eval = FALSE}
+get_bar_p_quantiles <- function(p1, p2, alpha1, n_compartments, prior_width) {
+  fit <- fit_wrapper(n_compartments, p1, p2, alpha1, eval = FALSE) %>%
+    readRDS
+  if(n_compartments >= 2) {
+    bar_p_name <- "bar_p"
+  } else {
+    bar_p_name <- "p"
+  }
+  
+  p <- fit$fit %>% extract_fit(0, bar_p_name, drop = TRUE)
+  quanntiles <- quantile(p, probs = c(0.025, 0.5, 0.975))
+  bar_p <- p1 * alpha1 + p2 * (1 - alpha1)
+  quantiles <- c(quantiles, bar_p > quantiles[1] && bar_p < quantiles[3],
+                 quantiles[3] - quantiles[1])
+  names(quantiles) <- c("lower", "median", "upper", "accurate", "range")
+  quantiles
+}
+
+fit_grid <- fit_grid %>%
+  select(-eval)
+
+bar_p_quantiles <- fit_grid %>%
+  apply_named_args(1, get_bar_p_quantiles) %>%
+  do.call(rbind, .) %>%
+  as_tibble %>%
+  bind_cols(fit_grid) %>%
+  full_join(sim_pars_grid) %>%
+  mutate(bar_p_true = p1 * alpha1 + p2 * (1 - alpha1),
+         rel_error = abs(median - bar_p_true) / bar_p_true * 100,
+         rel_range = range / bar_p_true * 100,
+         prior_width = factor(prior_width),  
+         model = factor(n_compartments))
+levels(bar_p_quantiles$model) <- c(1, "kh", 2)
+saveRDS(bar_p_quantiles, quantiles_filename)
+```
+
+```{r error_prior_width, fig.width = 8, fig.height = 3, fig.cap = "Percentage error in the estimated proliferation rate by model and prior width."}
+bar_p_quantiles %>%
+  ggplot(aes(x = prior_width, y = rel_error, group = prior_width)) +
+  facet_wrap(~model, nrow = 1) +
+  geom_boxplot() +
+  theme_bw() +
+  coord_cartesian(ylim = c(0, 100)) +
+  xlab(latex2exp::TeX("Prior width")) +
+  ylab("Error in estimated \n mean proliferation rate (%)")
+```
+
+```{r error_prior_width, fig.width = 8, fig.height = 3, fig.cap = "Percentage error in the estimated proliferation rate by model and prior width."}
+bar_p_quantiles %>%
+  ggplot(aes(x = prior_width, y = rel_range, group = prior_width)) +
+  facet_wrap(~model, nrow = 1, scales = "free") +
+  geom_boxplot() +
+  theme_bw() +
+  xlab(latex2exp::TeX("Prior width")) +
+  ylab("Width of 95% CI as \n % of true value")
+```
+
+```{r}
+
+```
 
 ```{r}
 ```

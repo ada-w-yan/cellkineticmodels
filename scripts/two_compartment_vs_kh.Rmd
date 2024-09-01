@@ -262,31 +262,31 @@ plot_bar_p_quantiles <- function(bar_p_quantiles, x_var, row_var, col_var, n_com
 }
 ```
 
-```{r change_p1_kh_slowest, fig.width = 8, fig.height = 8}
+```{r change_p1_kh_slowest, eval = FALSE, fig.width = 8, fig.height = 8}
 plot_bar_p_quantiles(bar_p_quantiles, "p1", "alpha1", "p2", 1.5, plot_slowest = TRUE)
 ```
 
-```{r change_p1_kh, fig.width = 8, fig.height = 8}
+```{r change_p1_kh, eval = FALSE, fig.width = 8, fig.height = 8}
 plot_bar_p_quantiles(bar_p_quantiles, "p1", "alpha1", "p2", 1.5)
 ```
 
-```{r change_alpha1_kh, fig.width = 8, fig.height = 8}
+```{r change_alpha1_kh, eval = FALSE, fig.width = 8, fig.height = 8}
 plot_bar_p_quantiles(bar_p_quantiles, "alpha1", "p1", "p2", 1.5)
 ```
 
-```{r change_p2_kh, fig.height = 8, fig.width = 8}
+```{r change_p2_kh, eval = FALSE, fig.height = 8, fig.width = 8}
 plot_bar_p_quantiles(filter(bar_p_quantiles, p1 > 0.0072), "p2", "p1", "alpha1", 1.5)
 ```
 
-```{r change_p1_two_compartment, fig.width = 8, fig.height = 8}
+```{r change_p1_two_compartment, eval = FALSE, fig.width = 8, fig.height = 8}
 plot_bar_p_quantiles(bar_p_quantiles, "p1", "alpha1", "p2", 2)
 ```
 
-```{r change_alpha1_two_compartment, fig.width = 8, fig.height = 8}
+```{r change_alpha1_two_compartment, eval = FALSE, fig.width = 8, fig.height = 8}
 plot_bar_p_quantiles(bar_p_quantiles, "alpha1", "p1", "p2", 2)
 ```
 
-```{r change_p2_two_compartment, fig.height = 8, fig.width = 8}
+```{r change_p2_two_compartment, eval = FALSE, fig.height = 8, fig.width = 8}
 plot_bar_p_quantiles(filter(bar_p_quantiles, p1 > 0.0072), "p2", "p1", "alpha1", 2)
 ```
 
@@ -317,7 +317,7 @@ plot_single <- function(bar_p_quantiles, x_var, tag1) {
 }
 ```
 
-```{r change_p1_single, fig.width = 8, fig.height = 6}
+```{r change_p1_single, eval = FALSE, fig.width = 8, fig.height = 6}
 change_p1_kh <- plot_single(filter(bar_p_quantiles, n_compartments == 1.5, p2 == 0.016, 
                                    abs(alpha1 - 0.7) < 1e-6), 
                             "p1", "A")
@@ -353,7 +353,7 @@ bar_p_quantiles %>%
 
 # Model comparison
 
-```{r eval = FALSE}
+```{r eval = TRUE}
 calc_and_compare_loos_incremental <- function(idx, p1, p2, alpha1, most_complex_model) {
   n_compartments <- n_compartments[n_compartments <= most_complex_model]
   fit_filenames <- vcapply(n_compartments, \(x) fit_wrapper(x, p1, p2, alpha1, eval = FALSE))
@@ -400,7 +400,7 @@ model_comparison <- function(idx1) {
 }
 ```
 
-```{r eval = FALSE}
+```{r eval = TRUE}
 model_comparison_results <- vnapply(seq_len(nrow(sim_pars_grid)), model_comparison)
 saveRDS(model_comparison_results, paste0(dir_name, "model_comparison_results.rds"))
 ```
@@ -411,7 +411,7 @@ bar_p_quantiles <- bar_p_quantiles %>%
 levels(bar_p_quantiles$model) <- c(1, "kh", seq(2,6))
 ```
 
-```{r eval = FALSE}
+```{r eval = TRUE}
 model_comparison_results <- readRDS(paste0(dir_name, "model_comparison_results.rds"))
 model_comparison_results_tibble <- tibble(selected_model = factor(model_comparison_results)) %>%
   mutate(idx = seq_len(n()))
@@ -420,7 +420,7 @@ model_comparison_results_tibble <- model_comparison_results_tibble %>%
   full_join(select(bar_p_quantiles, -n_compartments))
 ```
 
-```{r eval = FALSE}
+```{r eval = TRUE}
 quantiles <- quantiles %>%
   select(idx, p1, p2, alpha1, bar_p, everything()) %>%
   rename(khlower = `1.5lower`,
@@ -439,11 +439,12 @@ quantiles <- quantiles %>%
 write_csv(quantiles, paste0(dir_name_out, "six_model_results.csv"))
 ```
 
-```{r eval = FALSE, ranges_boxplot_mean_model_selection, fig.width = 3, fig.height = 3, fig.cap = "Width of 95% CIs across 125 simulations for the homogeneous model, the heterogeneous model, and model selection."}
+```{r eval = TRUE, ranges_boxplot_mean_model_selection, fig.width = 3, fig.height = 3, fig.cap = "Width of 95% CIs for the proliferation rate across 125 simulations for the homogeneous model, the heterogeneous model, and model selection, as a percentage of the true proliferation rate."}
 model_selection_range <- model_comparison_results_tibble %>%
   filter(selected_model == model) %>%
   select(idx, range) %>%
-  mutate(model = "model_selection")
+  mutate(model = "model_selection",
+         rel_range = range / bar_p_true * 100)
 
 bar_p_quantiles %>%
   select(idx, range, model) %>%
@@ -454,12 +455,15 @@ bar_p_quantiles %>%
   geom_boxplot() +
   theme_bw() +
   xlab("Strategy") +
-  ylab("Width of 95% CI")
+  ylab("Width of 95% CI as \n % of true value")
+```
+
+```{r}
+bar_p_quantiles <- bar_p_quantiles %>%
+  mutate(rel_error = abs(median - bar_p_true) / bar_p_true * 100)
 ```
 
 ```{r eval = FALSE, error1, fig.width = 5, fig.cap = "Difference between median estimate and true value of mean proliferation rate for each model, across 125 simulations."}
-bar_p_quantiles <- bar_p_quantiles %>%
-  mutate(error = median - bar_p_true)
 ggplot(bar_p_quantiles, aes(x = model, y = error)) +
   geom_boxplot() +
   theme_bw() +
@@ -467,11 +471,11 @@ ggplot(bar_p_quantiles, aes(x = model, y = error)) +
   ylab("Difference between median estimate \n and true value of mean proliferation rate")
 ```
 
-```{r eval = FALSE, error12, fig.width = 3, fig.height = 3.5, fig.cap = "Difference between median estimate and true value of mean proliferation rate for the homogeneous, heterogeneous and model selection, across 125 simulations."}
+```{r eval = TRUE, error12, fig.width = 3, fig.height = 3.5, fig.cap = "Percentage error in the mean proliferation rate for the homogeneous, heterogeneous and model selection, across 125 simulations."}
 error_model_selection <- model_comparison_results_tibble %>%
   filter(model == selected_model) %>%
-  mutate(error = median - bar_p_true) %>%
-  select(idx, error) %>%
+  mutate(rel_error = abs(median - bar_p_true)/ bar_p_true * 100) %>%
+  select(idx, rel_error) %>%
   mutate(model = "model_selection")
 bar_p_quantiles %>%
   filter(model %in% c(1, "kh")) %>%
@@ -482,7 +486,7 @@ bar_p_quantiles %>%
   geom_boxplot() +
   theme_bw() +
   xlab("Strategy") +
-  ylab("Difference between median estimate and \n true value of mean proliferation rate")
+  ylab("Error in estimated \n mean proliferation rate (%)")
 ```
 
 ```{r}

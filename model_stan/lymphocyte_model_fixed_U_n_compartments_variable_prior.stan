@@ -146,11 +146,3 @@ model {
     }
   }
 }
-
-// output log likelihood
-generated quantities {
-  vector[T] log_lik;
-  for (t in 1:T) {
-    log_lik[t] = normal_lpdf(L[t] | Lhat[t], sigma);
-  }
-}
