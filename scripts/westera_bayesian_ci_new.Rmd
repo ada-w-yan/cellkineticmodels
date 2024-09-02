@@ -181,7 +181,7 @@ fit_wrapper <- function(n_compartments, p1, p2, alpha1, prior_width, eval = TRUE
 ```
 
 ```{r}
-prior_width_vec <- c(2, 5, 10)
+prior_width_vec <- c(1, 2, 5, 10)
 fit_grid <- expand_grid(n_compartments = n_compartments, 
                         sim_pars_grid, 
                         prior_width = prior_width_vec, eval = TRUE) %>%
@@ -193,17 +193,17 @@ apply_named_args(fit_grid, 1, fit_wrapper)
 ```
 
 ```{r eval = FALSE}
-get_bar_p_quantiles <- function(p1, p2, alpha1, n_compartments, prior_width) {
-  fit <- fit_wrapper(n_compartments, p1, p2, alpha1, eval = FALSE) %>%
+get_bar_p_quantiles <- function(n_compartments, p1, p2, alpha1, prior_width) {
+  fit <- fit_wrapper(n_compartments, p1, p2, alpha1, prior_width, eval = FALSE) %>%
     readRDS
   if(n_compartments >= 2) {
     bar_p_name <- "bar_p"
   } else {
     bar_p_name <- "p"
   }
-  
+
   p <- fit$fit %>% extract_fit(0, bar_p_name, drop = TRUE)
-  quanntiles <- quantile(p, probs = c(0.025, 0.5, 0.975))
+  quantiles <- quantile(p, probs = c(0.025, 0.5, 0.975))
   bar_p <- p1 * alpha1 + p2 * (1 - alpha1)
   quantiles <- c(quantiles, bar_p > quantiles[1] && bar_p < quantiles[3],
                  quantiles[3] - quantiles[1])
