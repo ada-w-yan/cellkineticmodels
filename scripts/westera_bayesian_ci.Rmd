@@ -201,7 +201,7 @@ plot_p_all <- function(n_compartments_vec, wide_prior) {
     ungroup()
   true_p <- out[[1]]$true_p
   
-  tag1 <- if(wide_prior) "B" else "A"
+  # tag1 <- if(wide_prior) "B" else "A"
   ggplot(p, aes(x = n_compartments, group = n_compartments)) +
     geom_point(aes(y = median)) +
     geom_errorbar(aes(ymin = lower, ymax = upper)) +
@@ -210,16 +210,16 @@ plot_p_all <- function(n_compartments_vec, wide_prior) {
     expand_limits(y = 0) +
     labs(color = "") +
     xlab("No. of compartments") +
-    ylab("Mean proliferation rate (/day)") +
-    labs(tag = tag1)
+    ylab("Mean proliferation rate (/day)")# +
+    # labs(tag = tag1)
 }
 ```
 
-```{r plot_p_all, fig.width = 5, fig.height = 3, fig.cap = "Posterior distributions for the mean proliferation rate, for different numbers of fitted compartments, with perfect labelling and a prior for p between 0 and 1.  kh denotes fitting a model with kinetic heterogeneity.\\label{fig:plot_p_all}"}
+```{r plot_p_all, fig.width = 4, fig.height = 2.5, fig.cap = "Posterior distributions for the mean proliferation rate, for different numbers of fitted compartments, with perfect labelling and a prior for p between 0 and 1.  kh denotes fitting a model with kinetic heterogeneity.\\label{fig:plot_p_all}"}
 plot_p_all(seq_len(n_compartments_max), wide_prior = FALSE)
 ```
 
-```{r plot_p_all_wide_prior, fig.width = 5, fig.height = 3, fig.cap = "Posterior distributions for the mean proliferation rate, for different numbers of fitted compartments, with perfect labelling and a prior for p between 0 and 10.  kh denotes fitting a model with kinetic heterogeneity.\\label{fig:plot_p_all_wide_prior}"}
+```{r plot_p_all_wide_prior, fig.width = 4, fig.height = 2.5, fig.cap = "Posterior distributions for the mean proliferation rate, for different numbers of fitted compartments, with perfect labelling and a prior for p between 0 and 10.  kh denotes fitting a model with kinetic heterogeneity.\\label{fig:plot_p_all_wide_prior}"}
 plot_p_all(seq_len(n_compartments_max), wide_prior = TRUE)
 ```
 

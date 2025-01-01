@@ -124,7 +124,7 @@ saveRDS(fit, fit_homogeneous_filename)
 
 ## Plot marginal posterior distributions (Fig 2)
 
-```{r posterior_homogeneous, fig.width = 6, fig.height = 3, fig.cap = "Marginal posterior distributions for (left) $p_E$ and (right) $d^*_E$ when fitting the one-compartment model to the downstream data. The red line shows the values of (left) the mean turnover rate across all downstream cells and (right) the disappearance rate of labelled downstream cells used to simulate the data, while the blue line shows the proliferation rate of downstream cells used to simulate the data. \\label{fig:posterior_homogeneous}"}
+```{r posterior_homogeneous, eval = FALSE, fig.width = 6, fig.height = 3, fig.cap = "Marginal posterior distributions for (left) $p_E$ and (right) $d^*_E$ when fitting the one-compartment model to the downstream data. The red line shows the values of (left) the mean turnover rate across all downstream cells and (right) the disappearance rate of labelled downstream cells used to simulate the data, while the blue line shows the proliferation rate of downstream cells used to simulate the data. \\label{fig:posterior_homogeneous}"}
 fit <- readRDS(fit_homogeneous_filename)
 fit_matrix <- as.matrix(fit$fit)
 pred_single <- get_max_LL_row(fit$fit)
@@ -321,7 +321,8 @@ samples <- readRDS(samples_filename) %>%
   as.data.frame %>% as_tibble %>%
   mutate(run = seq_len(nrow(samples)),
          turnover = (two_k_minus_one + 1) * Delta * C_on_E + p_E,
-         production_rate_by_division = two_k_minus_one * Delta * C_on_E + p_E)
+         production_rate_by_division = two_k_minus_one * Delta * C_on_E + p_E,
+         influx_ratio = 1/(1 + p_E/Delta/(two_k_minus_one + 1) / C_on_E))
 ```
 
 ```{r eval = FALSE}
@@ -348,7 +349,7 @@ write.csv(sum_stats, paste0(dir_name, "source_term_model_estimated_pars.csv"), r
 
 # Fig 3
 
-```{r}
+```{r fig.width = 12, fig.height = 3}
 p <- readRDS(p_filename) %>%
   group_by(run) %>%
   summarise(p_median = median(p), dstar_median = median(dstar)) %>%
@@ -360,47 +361,115 @@ if(!k0) {
 
 diag_tibble <- tibble(x = c(0, 1))
 
-make_plot <- function(p, diag_tibble, x_var, y_var, x_lab, y_lab, tag_str) {
+make_plot <- function(p, diag_tibble, x_var, y_var, x_lab, y_lab) {
   x_max <- p %>%
     select(c(x_var, y_var)) %>%
     as.matrix %>%
     max
   ggplot(p, aes(x = .data[[x_var]], y = .data[[y_var]])) +
-    geom_point() +
+    geom_point(aes(color = influx_ratio)) +
     geom_line(data = diag_tibble, aes(x = x, y = x)) +
     theme_bw() +
     coord_cartesian(xlim = c(0, x_max), ylim = c(0, x_max)) +
-    theme(aspect.ratio = 1) +
+    scale_color_continuous(limits = c(0, 1)) +
+    theme(aspect.ratio = 1,
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+          text = element_text(size = 14),
+          legend.position = "none") +
     xlab(x_lab) +
-    ylab(y_lab) +
-    labs(tag = tag_str)
+    ylab(y_lab)
 }
 
 proliferation_plot <- make_plot(p, diag_tibble, "p_E", "p_median",
-                                "True value of \n proliferation rate (per day)",
-                                latex2exp::TeX("$\\hat{p_E}$ (per day)"),
-                                ifelse(k0, "E", "A"))
+                                "True value of \n proliferation rate \n (per day)",
+                                latex2exp::TeX("$\\hat{p}$ (per day)"))#,
+# ifelse(k0, "E", "A"))
 
 turnover_plot <- make_plot(p, diag_tibble, "turnover", "p_median",
-                           "True value of \n turnover rate (per day)",
-                           latex2exp::TeX("$\\hat{p_E}$ (per day)"),
-                           ifelse(k0, "F", "B"))
+                           "True value of \n turnover rate \n (per day)",
+                           latex2exp::TeX("$\\hat{p}$ (per day)"))
+# ifelse(k0, "F", "B"))
 
 production_plot <- make_plot(p, diag_tibble, "production_rate_by_division", "p_median",
-                             "True value of production rate \n by division (per day)",
-                             latex2exp::TeX("$\\hat{p_E}$ (per day)"),
-                             ifelse(k0, "G", "C"))
+                             "True value of \n production rate by \n division (per day)",
+                             latex2exp::TeX("$\\hat{p}$ (per day)"))
+# ifelse(k0, "G", "C"))
 
 dstar_plot <- make_plot(p, diag_tibble, "dstar_E", "dstar_median",
-                        "True value of disappearance rate \n of labelled cells (per day)",
-                        latex2exp::TeX("$\\hat{d^*_E}$ (per day)"),
-                        ifelse(k0, "H", "D"))
-
+                        "True value of \n disappearance  rate of \n labelled cells (per day)",
+                        latex2exp::TeX("$\\hat{d^*}$ (per day)"))
+# ifelse(k0, "H", "D"))
+# turnover_plot
 g1 <- gridExtra::grid.arrange(proliferation_plot, turnover_plot, production_plot, dstar_plot, nrow = 1)
 ggsave(paste0(dir_name, "fit_one_compartment_lhs.pdf"), g1, width = 12, height = 3)
 ```
 
 ```{r}
+theor_error <- expand_grid(influx_ratio = seq(0, 1, by = .01),
+                           k = seq(0, 20)) %>%
+  mutate(proliferation_error = influx_ratio / (1 - influx_ratio) * (2^k-1)/2^k * 100,
+         turnover_error = influx_ratio/2^k * 100)
+
+p <- p %>%
+  mutate(proliferation_error = (p_median - p_E)/p_E * 100,
+         turnover_error = abs(p_median - turnover)/turnover * 100,
+         k = log2(two_k_minus_one + 1))
+g <- ggplot(theor_error) +
+  geom_line(aes(x = influx_ratio, y = proliferation_error, color = k, group = k)) +
+  scale_y_log10("Error in proliferation rate") +
+  theme_bw() +
+  geom_point(data = p, aes(x = influx_ratio, y = proliferation_error, color = k, group = k))
+g
+g <- ggplot(theor_error, aes(x = influx_ratio, y = turnover_error, color = k, group = k)) +
+  geom_line() +
+    theme_bw() +
+  geom_point(data = p, aes(x = influx_ratio, y = turnover_error, color = k, group = k))
+g
+```
+```{r eval = FALSE, fig.width = 3, fig.height = 3}
+p <- p %>%
+  mutate(proliferation_error = (production_rate_by_division - p_E)/p_E * 100,
+         turnover_error = abs(production_rate_by_division - turnover)/turnover * 100,
+         k = log2(two_k_minus_one + 1),
+         z = influx_ratio/(two_k_minus_one + 1) * 100,
+         y=1/(1/influx_ratio - 1) * 100)
+
+# ggplot(aes(x = influx_ratio, y = y))
+g <- ggplot(p, aes(x = influx_ratio, y = proliferation_error)) +
+  scale_y_log10("Error in proliferation rate") +
+  theme_bw() +
+  xlab("Influx ratio")
+if(k0) {
+  g <- g + geom_point()
+} else {
+  g <- g + geom_point(aes(color = k)) +
+    theme(legend.position = "none") +
+    geom_line(aes(y = y))
+}
+
+ggsave(paste0(dir_name, "proliferation_error.pdf"), g, width = 3, height = 3)
+g
+
+g <- ggplot(p, aes(x = influx_ratio, y = turnover_error)) +
+  ylab("Error in turnover rate") +
+  theme_bw() +
+  xlab("Influx ratio")
+if(k0) {
+  g <- g + geom_point()
+} else {
+  g <- g + geom_point(aes(color = k)) +
+    theme(legend.position = "none") +
+    geom_line(aes(y = z, group = k))
+}
+
+# ggsave(paste0(dir_name, "turnover_error.pdf"), g, width = 3, height = 3)
+g
+# if(k0) g <- g + coord_cartesian(xlim = c(-1, 0), ylim = c(-1, 0))
+# # coord_cartesian(xlim = c(0, 1), ylim = c(0, 1))
+# ggsave(paste0(dir_name, "error.pdf"), g, width = 3, height = 3)
+```
+
+```{r eval = FALSE}
 if(k0) {
   p <- p %>%
     mutate(est_error = (p_median - turnover)/turnover,
@@ -491,7 +560,7 @@ ggplot(p, aes(x = dstar_E, y = dstar_median)) +
 
 ggplot(p, aes(x = dstar_diff, y = dstar_error)) +
   geom_point()# +
-  # coord_cartesian(xlim = c(0, 5))
+# coord_cartesian(xlim = c(0, 5))
 
 get_prctile_dstar_diff <- function(p, dstar_diff_thres) {
   p %>%

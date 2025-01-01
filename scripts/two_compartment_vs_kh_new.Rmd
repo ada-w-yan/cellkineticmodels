@@ -551,5 +551,13 @@ all_quantiles %>%
   geom_point(aes(color = rel_error))
 ```
 
+
+```{r pairs_plots}
+fit <- fit_wrapper(2, 0.72, 0.016, .1, eval = FALSE) %>% readRDS()
+pairs(fit$fit, pars = c("p[1]", "p[2]", "frac_pop[1]"))
+fit <- fit_wrapper(2, 0.018, 0.016, .1, eval = FALSE) %>% readRDS()
+pairs(fit$fit, pars = c("p[1]", "p[2]", "frac_pop[1]"))
+```
+
 ```{r}
 ```
