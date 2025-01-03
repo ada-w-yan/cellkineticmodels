@@ -25,8 +25,9 @@ devtools::load_all("~/git_repos/cellkineticmodels/") # change this to the direct
 options(mc.cores = parallel::detectCores())
 rstan::rstan_options(auto_write = TRUE)
 set.seed(1)
-dir_name <- "two_compartment_vs_kh_files/"
+dir_name <- "/data/projects/punim0053/ayan_old/git_repos/cellkineticmodels/scripts/two_compartment_vs_kh_files/"
 if(!dir.exists(dir_name)) dir.create(dir_name)
+quantiles_filename <- paste0(dir_name, "bar_p_quantiles_prior_width.rds")
 n_compartments <- c(1.5, seq_len(6)) %>% sort()
 ```
 
@@ -188,6 +189,8 @@ fit_grid <- expand_grid(n_compartments = n_compartments,
 ```
 
 ```{r eval = FALSE}
+# fit_grid <- fit_grid %>%
+#   filter(p1 == 0.72, p2 == 0.016, alpha1 == 0.1)
 apply_named_args(fit_grid, 1, fit_wrapper)
 ```
 
@@ -250,7 +253,7 @@ plot_p_all(n_compartments, prior_width = 1)
 ```
 
 ```{r plot_p_all_wide_prior, fig.width = 4, fig.height = 2.5, fig.cap = "Posterior distributions for the mean proliferation rate, for different numbers of fitted compartments, with perfect labelling and a prior for p between 0 and 10.  kh denotes fitting a model with kinetic heterogeneity.\\label{fig:plot_p_all_wide_prior}"}
-plot_p_all(seq_len(n_compartments_max), prior_width = 10)
+plot_p_all(n_compartments, prior_width = 10)
 ```
 
 ```{r eval = FALSE}
@@ -273,10 +276,10 @@ get_bar_p_quantiles <- function(n_compartments, p1, p2, alpha1, prior_width) {
 }
 
 fit_grid <- fit_grid %>%
-  select(-eval)
+  select(-eval) %>%
+  filter(n_compartments <= 2) 
 
 bar_p_quantiles <- fit_grid %>%
-  filter(n_compartments <= 2) %>%
   apply_named_args(1, get_bar_p_quantiles) %>%
   do.call(rbind, .) %>%
   as_tibble %>%
@@ -287,7 +290,7 @@ bar_p_quantiles <- fit_grid %>%
          rel_range = range / bar_p_true * 100,
          prior_width = factor(prior_width),  
          model = factor(n_compartments))
-levels(bar_p_quantiles$model) <- c(1, "kh", 2)
+levels(bar_p_quantiles$model) <- c("homogeneous", "implicit heterogeneous", "explicit heterogeneous")
 saveRDS(bar_p_quantiles, quantiles_filename)
 ```
 
@@ -296,22 +299,22 @@ saveRDS(bar_p_quantiles, quantiles_filename)
 ```{r error_prior_width, fig.width = 8, fig.height = 3, fig.cap = "Percentage error in the estimated proliferation rate by model and prior width."}
 bar_p_quantiles %>%
   ggplot(aes(x = prior_width, y = rel_error, group = prior_width)) +
-  facet_wrap(~model, nrow = 1) +
+  facet_wrap(~model, nrow = 1, scales = "free") +
   geom_boxplot() +
   theme_bw() +
-  coord_cartesian(ylim = c(0, 100)) +
   xlab(latex2exp::TeX("Prior width")) +
   ylab("Error in estimated \n mean proliferation rate (%)")
 ```
 
 ```{r fig.width = 8, fig.height = 3}
 bar_p_quantiles %>%
-  ggplot(aes(x = prior_width, y = rel_range, group = prior_width)) +
-  facet_wrap(~model, nrow = 1, scales = "free") +
+  ggplot(aes(x = prior_width, y = range, group = prior_width)) +
+  facet_wrap(~model, nrow = 1) +
   geom_boxplot() +
   theme_bw() +
+  coord_cartesian(ylim = c(0, 10)) +
   xlab(latex2exp::TeX("Prior width")) +
-  ylab("Width of 95% CI as \n % of true value")
+  ylab("Width of 95% CI")
 ```
 
 ```{r}
