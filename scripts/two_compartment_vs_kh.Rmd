@@ -28,7 +28,6 @@ set.seed(1)
 dir_name <- "two_compartment_vs_kh_files/"
 if(!dir.exists(dir_name)) dir.create(dir_name)
 quantiles_filename <- paste0(dir_name, "bar_p_quantiles.rds")
-loo_filename <- paste0(dir_name, "loo.rds")
 n_compartments <- c(1, 1.5, seq(2, 6))
 make_plots <- TRUE
 ```
@@ -220,8 +219,6 @@ sim_pars_grid <- sim_pars_grid %>%
   mutate(idx = seq_len(n())) %>%
   select(idx, everything())
 
-fit_grid <- fit_grid %>%
-  filter(n_compartments <= 2)
 bar_p_quantiles <- fit_grid %>%
   apply_named_args(1, get_bar_p_quantiles) %>%
   do.call(rbind, .) %>%
@@ -262,9 +259,7 @@ plot_bar_p_quantiles <- function(bar_p_quantiles, x_var, row_var, col_var, n_com
 }
 ```
 
-```{r change_p1_kh_slowest, eval = FALSE, fig.width = 8, fig.height = 8}
-plot_bar_p_quantiles(bar_p_quantiles, "p1", "alpha1", "p2", 1.5, plot_slowest = TRUE)
-```
+## Supplementary Figures
 
 ```{r change_p1_kh, eval = FALSE, fig.width = 8, fig.height = 8}
 plot_bar_p_quantiles(bar_p_quantiles, "p1", "alpha1", "p2", 1.5)
@@ -290,73 +285,13 @@ plot_bar_p_quantiles(bar_p_quantiles, "alpha1", "p1", "p2", 2)
 plot_bar_p_quantiles(filter(bar_p_quantiles, p1 > 0.0072), "p2", "p1", "alpha1", 2)
 ```
 
-```{r}
-plot_single <- function(bar_p_quantiles, x_var, tag1) {
-  x_lab <- switch(x_var,
-                  p1 = "$p_1$",
-                  p2 = "$p_2$",
-                  alpha1 = "$\\alpha_1")
-  
-  y_max <- switch(x_var,
-                  p1 = 1,
-                  p2 = 0.05,
-                  alpha1 = 1)
-  
-  bar_p_quantiles %>%
-    ggplot(aes(x = .data[[x_var]])) +
-    geom_point(aes(y = median)) +
-    geom_errorbar(aes(ymin = lower, ymax = upper)) +
-    geom_line(aes(y = bar_p_true)) +
-    expand_limits(x = 0) +
-    coord_cartesian(ylim = c(0, y_max)) +
-    xlab(TeX(x_lab)) +
-    ylab("Estimated mean proliferation rate") +
-    labs(tag = tag1) +
-    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
-    theme_bw()
-}
-```
-
-```{r change_p1_single, eval = FALSE, fig.width = 8, fig.height = 6}
-change_p1_kh <- plot_single(filter(bar_p_quantiles, n_compartments == 1.5, p2 == 0.016, 
-                                   abs(alpha1 - 0.7) < 1e-6), 
-                            "p1", "A")
-change_p2_kh <- plot_single(filter(bar_p_quantiles, n_compartments == 1.5, p1 == 0.018, alpha1 == 0.1), 
-                            "p2", "B")
-change_alpha1_kh <- plot_single(filter(bar_p_quantiles, n_compartments == 1.5, p1 == 0.72, p2 == 0.016), 
-                                "alpha1", "C")
-change_p1_two_compartment <- plot_single(filter(bar_p_quantiles, n_compartments == 2, p2 == 0.016, 
-                                                abs(alpha1 - 0.7) < 1e-6), 
-                                         "p1", "D")
-change_p2_two_compartment <- plot_single(filter(bar_p_quantiles, n_compartments == 2, p1 == 0.018, alpha1 == 0.1), 
-                                         "p2", "E")
-change_alpha1_two_compartment <- plot_single(filter(bar_p_quantiles, n_compartments == 2, p1 == 0.72, p2 == 0.016), 
-                                             "alpha1", "F")
-g1 <- gridExtra::grid.arrange(change_p1_kh, change_p2_kh, change_alpha1_kh,
-                              change_p1_two_compartment,
-                              change_p2_two_compartment, change_alpha1_two_compartment, nrow = 2)
-g1
-```
-
-```{r eval = FALSE, estimated_vs_true}
-bar_p_quantiles %>%
-  filter(n_compartments == 1.5) %>%
-  ggplot(aes(x = bar_p_true)) +
-  geom_point(aes(y = median)) +
-  geom_line(aes(y = bar_p_true), linetype = "dotted") +
-  geom_errorbar(aes(ymin = lower, ymax = upper)) +
-  scale_x_log10("True mean proliferation rate") +
-  scale_y_log10("Estimated mean proliferation rate") +
-  theme_bw() +
-  coord_fixed()
-```
-
 # Model comparison
 
-```{r eval = TRUE}
+```{r}
 calc_and_compare_loos_incremental <- function(idx, p1, p2, alpha1, most_complex_model) {
-  n_compartments <- n_compartments[n_compartments <= most_complex_model]
-  fit_filenames <- vcapply(n_compartments, \(x) fit_wrapper(x, p1, p2, alpha1, eval = FALSE))
+  # compare current most complex model and second most complex model
+  models <- most_complex_model + c(-1, 0)
+  fit_filenames <- vcapply(models, \(x) fit_wrapper(x, p1, p2, alpha1, eval = FALSE))
   fit_list <- lapply(fit_filenames, readRDS)
   
   # calculate the loos
@@ -368,39 +303,32 @@ calc_and_compare_loos_incremental <- function(idx, p1, p2, alpha1, most_complex_
   # model3   0.0       0.0  
   # model2  -0.1       0.3  
   # model1 -12.7       6.3  
-  # calc_and_compare_loos assigns names model1, model2, model3, model 4 -- correct the names
   loos <- loos %>%
-    as_tibble(rownames = "model") %>%
-    mutate(model = recode(model,
-                          model2 = "model1.5",
-                          model3 = "model2",
-                          model4 = "model3",
-                          model5 = "model4",
-                          model6 = "model5",
-                          model7 = "model6"))
+    as_tibble(rownames = "model")
   loos
 } 
 
 model_comparison <- function(idx1) {
+  print(paste0("index ", idx1))
   most_complex_model_idx <- 2
   pars <- sim_pars_grid %>% filter(idx == idx1) %>% unlist
-  while(most_complex_model_idx < 8) {
-    most_complex_model <- n_compartments[most_complex_model_idx]
+  while(most_complex_model_idx < 7) {
+    print(most_complex_model_idx)
     loos <- calc_and_compare_loos_incremental(idx1, pars[["p1"]], pars[["p2"]], pars[["alpha1"]],
-                                              most_complex_model = most_complex_model)
+                                              most_complex_model = most_complex_model_idx)
     # if most_complex_model dies not have the highest elpd_loo, 
     # or the difference is not big enough, return second most complex model
-    if(unlist(loos[1, "model"]) != paste0("model", most_complex_model) | 
+    if(unlist(loos[1, "model"]) != "model2" | 
        (unlist(loos[2,"elpd_diff"]) / unlist(loos[2,"se_diff"]) > -1))  {
-      return(n_compartments[most_complex_model_idx - 1])
+      return(most_complex_model_idx - 1)
     }
     most_complex_model_idx <- most_complex_model_idx + 1
   }
-  return(n_compartments[length(n_compartments)])
+  return(most_complex_model_idx - 1)
 }
 ```
 
-```{r eval = TRUE}
+```{r eval = FALSE}
 model_comparison_results <- vnapply(seq_len(nrow(sim_pars_grid)), model_comparison)
 saveRDS(model_comparison_results, paste0(dir_name, "model_comparison_results.rds"))
 ```
@@ -408,54 +336,41 @@ saveRDS(model_comparison_results, paste0(dir_name, "model_comparison_results.rds
 ```{r}
 bar_p_quantiles <- bar_p_quantiles %>%
   mutate(model = factor(n_compartments))
-levels(bar_p_quantiles$model) <- c(1, "kh", seq(2,6))
+levels(bar_p_quantiles$model) <- c("homogeneous", "implicit", "explicit\ntwo-compartment", 
+                                   "three-compartment", "four-compartment", "five-compartment", "six-compartment")
 ```
 
 ```{r eval = TRUE}
 model_comparison_results <- readRDS(paste0(dir_name, "model_comparison_results.rds"))
-model_comparison_results_tibble <- tibble(selected_model = factor(model_comparison_results)) %>%
+model_comparison_results_tibble <- tibble(selected_model = factor(model_comparison_results, levels = n_compartments)) %>%
   mutate(idx = seq_len(n()))
-levels(model_comparison_results_tibble$selected_model) <- c(1, "kh", seq(2,6))
+levels(model_comparison_results_tibble$selected_model) <- levels(bar_p_quantiles$model)
 model_comparison_results_tibble <- model_comparison_results_tibble %>%
   full_join(select(bar_p_quantiles, -n_compartments))
 ```
 
-```{r eval = TRUE}
-quantiles <- quantiles %>%
-  select(idx, p1, p2, alpha1, bar_p, everything()) %>%
-  rename(khlower = `1.5lower`,
-         khmedian = `1.5median`,
-         khupper = `1.5upper`,
-         khaccurate = `1.5accurate`)
+## Fig 8 
 
-selected_model <- model_comparison_results_tibble %>%
-  select(idx, model) %>%
-  rename(selected_model = model)
-
-quantiles <- quantiles %>%
-  full_join(selected_model) %>%
-  select(idx, selected_model, everything())
-
-write_csv(quantiles, paste0(dir_name_out, "six_model_results.csv"))
-```
-
-```{r eval = TRUE, ranges_boxplot_mean_model_selection, fig.width = 3, fig.height = 3, fig.cap = "Width of 95% CIs for the proliferation rate across 125 simulations for the homogeneous model, the heterogeneous model, and model selection, as a percentage of the true proliferation rate."}
-model_selection_range <- model_comparison_results_tibble %>%
-  filter(selected_model == model) %>%
-  select(idx, range) %>%
-  mutate(model = "model_selection",
-         rel_range = range / bar_p_true * 100)
-
-bar_p_quantiles %>%
-  select(idx, range, model) %>%
-  filter(model %in% c("1", "kh")) %>%
+```{r eval = TRUE, error12, fig.width = 3, fig.height = 3.5, fig.cap = "Percentage error in the mean proliferation rate for the homogeneous, heterogeneous and model selection, across 125 simulations."}
+error_model_selection <- model_comparison_results_tibble %>%
+  filter(model == selected_model) %>%
+  mutate(rel_error = abs(median - bar_p_true)/ bar_p_true * 100) %>%
+  select(idx, rel_error) %>%
+  mutate(model = "model\nselection")
+g <- bar_p_quantiles %>%
+  filter(model %in% c("homogeneous", "implicit", "explicit\ntwo-compartment")) %>%
+  select(idx, rel_error, model) %>%
   mutate(model = as.character(model)) %>%
-  bind_rows(model_selection_range) %>%
-  ggplot(aes(x = model, y = range)) +
+  bind_rows(error_model_selection) %>%
+  mutate(model = factor(model, levels = c("homogeneous", "implicit", "explicit\ntwo-compartment","model\nselection"))) %>%
+  ggplot(aes(x = model, y = rel_error)) +
   geom_boxplot() +
   theme_bw() +
-  xlab("Strategy") +
-  ylab("Width of 95% CI as \n % of true value")
+  xlab("Model") +
+  ylab("Error in estimated \n mean proliferation rate (%)") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  coord_cartesian(ylim = c(0, 200))
+g
 ```
 
 ```{r}
@@ -463,30 +378,80 @@ bar_p_quantiles <- bar_p_quantiles %>%
   mutate(rel_error = abs(median - bar_p_true) / bar_p_true * 100)
 ```
 
-```{r eval = FALSE, error1, fig.width = 5, fig.cap = "Difference between median estimate and true value of mean proliferation rate for each model, across 125 simulations."}
-ggplot(bar_p_quantiles, aes(x = model, y = error)) +
+```{r eval = TRUE, percent_accurate, fig.width = 3, fig.height = 3.5, fig.cap = "Percentage error in the mean proliferation rate for the homogeneous, heterogeneous and model selection, across 125 simulations."}
+percent_accurate_model_selection <- model_comparison_results_tibble %>%
+  filter(model == selected_model) %>%
+  select(idx, accurate) %>%
+  mutate(model = "model\nselection")
+g <- bar_p_quantiles %>%
+  filter(model %in% c("homogeneous", "implicit", "explicit\ntwo-compartment")) %>%
+  select(idx, accurate, model) %>%
+  mutate(model = as.character(model)) %>%
+  bind_rows(percent_accurate_model_selection) %>%
+  mutate(model = factor(model, levels = c("homogeneous", "implicit", "explicit\ntwo-compartment","model\nselection"))) %>%
+  group_by(model) %>%
+  summarise(percent_accurate = sum(accurate) / n() * 100) %>%
+  ggplot(aes(x = model)) +
+  geom_col(aes(y = percent_accurate)) +
+  theme_bw() +
+  expand_limits(y = 100) +
+  xlab("Model") +
+  ylab("Percentage of \n accurate estimates") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+g
+```
+
+```{r range, fig.width = 3, fig.height = 3, fig.cap = "Width of 95% CI for the mean proliferation rate.\\label{fig:range}"}
+range_model_selection <- model_comparison_results_tibble %>%
+  filter(model == selected_model) %>%
+  select(idx, range) %>%
+  mutate(model = "model\nselection")
+g <- bar_p_quantiles %>%
+  filter(model %in% c("homogeneous", "implicit", "explicit\ntwo-compartment")) %>%
+  select(idx, range, model) %>%
+  mutate(model = as.character(model)) %>%
+  bind_rows(range_model_selection) %>%
+  mutate(model = factor(model, levels = c("homogeneous", "implicit", "explicit\ntwo-compartment","model\nselection"))) %>%
+  ggplot(aes(x = model, y = range)) +
   geom_boxplot() +
   theme_bw() +
   xlab("Model") +
-  ylab("Difference between median estimate \n and true value of mean proliferation rate")
+  ylab(latex2exp::TeX("Width of 95% CI (day$^{-1}$)")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  coord_cartesian(ylim = c(0, 1))
+g
 ```
 
-```{r eval = TRUE, error12, fig.width = 3, fig.height = 3.5, fig.cap = "Percentage error in the mean proliferation rate for the homogeneous, heterogeneous and model selection, across 125 simulations."}
-error_model_selection <- model_comparison_results_tibble %>%
-  filter(model == selected_model) %>%
-  mutate(rel_error = abs(median - bar_p_true)/ bar_p_true * 100) %>%
-  select(idx, rel_error) %>%
-  mutate(model = "model_selection")
+## Fig 9
+
+```{r subset_p_low_alpha, fig.width = 8, fig.height = 4, fig.cap = "Percentage error in the median estimate of the mean proliferation rate for each model, for the subset of simulations where p1 < 10p2. Simulations are divided into subplots by the value of alpha1 (top of plots).\\label{fig:subset_p_low_alpha}"}
+bar_p_quantiles <- bar_p_quantiles %>%
+  filter(model %in%c ("homogeneous", "implicit", "explicit\ntwo-compartment")) %>%
+  mutate(model = droplevels(model), p1_high = p1 > 10*p2)
+
 bar_p_quantiles %>%
-  filter(model %in% c(1, "kh")) %>%
-  select(idx, error, model) %>%
-  mutate(model = as.character(model)) %>%
-  bind_rows(error_model_selection) %>%
-  ggplot(aes(x = model, y = error)) +
+  filter(!p1_high) %>%
+  ggplot(aes(x = model, y = rel_error, group = model)) +
+  facet_wrap(~alpha1, nrow = 1) +
   geom_boxplot() +
   theme_bw() +
-  xlab("Strategy") +
-  ylab("Error in estimated \n mean proliferation rate (%)")
+  coord_cartesian(ylim = c(0, 100)) +
+  xlab("Model") +
+  ylab("Error in estimated \n mean proliferation rate (%)") +
+  ggtitle(latex2exp::TeX("$p_1 \\leq 10 p_2$"))
+```
+
+```{r subset_p_high_alpha, fig.width = 8, fig.height = 4, fig.cap = "Percentage error in the median estimate of the mean proliferation rate for each model, for the subset of simulations where p1 > 10p2. Simulations are divided into subplots by the value of alpha1 (top of plots).\\label{fig:subset_p_high_alpha}"}
+bar_p_quantiles %>%
+  filter(p1_high) %>%
+  ggplot(aes(x = model, y = rel_error, group = model)) +
+  facet_wrap(~alpha1, nrow = 1) +
+  geom_boxplot() +
+  theme_bw() +
+  coord_cartesian(ylim = c(0, 100)) +
+  xlab("Model") +
+  ylab("Error in estimated \n mean proliferation rate (%)") +
+  ggtitle(latex2exp::TeX("$p_1 > 10 p_2$"))
 ```
 
 ```{r}

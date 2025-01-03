@@ -27,8 +27,7 @@ rstan::rstan_options(auto_write = TRUE)
 set.seed(1)
 dir_name <- "two_compartment_vs_kh_files/"
 if(!dir.exists(dir_name)) dir.create(dir_name)
-quantiles_filename <- paste0(dir_name, "bar_p_quantiles_wide_prior.rds")
-n_compartments <- c(1, 1.5, 2)
+n_compartments <- c(1.5, seq_len(6)) %>% sort()
 ```
 
 ```{r}
@@ -192,6 +191,68 @@ fit_grid <- expand_grid(n_compartments = n_compartments,
 apply_named_args(fit_grid, 1, fit_wrapper)
 ```
 
+## Fig 10 A and 10 B
+
+```{r}
+# sim_pars <- list(p = c(0.720, 0.016), frac_pop = c(0.1, 0.9), label_end = 90)
+
+plot_p_all <- function(n_compartments_vec, prior_width) {
+  get_p <- function(n_compartments) {
+    fit <- fit_wrapper(n_compartments = n_compartments, 
+                       p1 = 0.72,
+                       p2 = 0.016,
+                       alpha1 = 0.1,
+                       prior_width = prior_width,
+                       eval= FALSE) %>%
+      readRDS
+    sim_data <- sim_data_wrapper(p1 = 0.72,
+                                 p2 = 0.016,
+                                 alpha1 = 0.1,
+                                 eval = FALSE) %>% readRDS
+    
+    p <- fit$fit %>% extract_fit(0, ifelse(n_compartments < 2, "p", "bar_p")) %>%
+      as.data.frame %>% as_tibble %>%
+      mutate(n_compartments = ifelse(n_compartments == 1.5, "implicit", n_compartments))
+    if(n_compartments < 2) {
+      p <- p %>% rename(bar_p = "p")
+    }
+    
+    true_p <- sum(sim_data$pars$p * sim_data$pars$frac_pop)
+    list(p = p, true_p = true_p)
+  }
+  
+  out <- lapply(n_compartments_vec, get_p)
+  
+  p <- lapply(out, function(x) x$p) %>%
+    do.call(rbind, .) %>%
+    group_by(n_compartments) %>%
+    summarise(lower = quantile(bar_p, 0.025),
+              median = median(bar_p),
+              upper = quantile(bar_p, 0.975)) %>%
+    ungroup()
+  true_p <- out[[1]]$true_p
+  
+  ggplot(p, aes(x = n_compartments, group = n_compartments)) +
+    geom_point(aes(y = median)) +
+    geom_errorbar(aes(ymin = lower, ymax = upper)) +
+    geom_hline(yintercept = true_p) +
+    theme_bw() +
+    expand_limits(y = 0) +
+    labs(color = "") +
+    xlab("No. of compartments") +
+    ylab("Mean proliferation rate (/day)")# +
+  # labs(tag = tag1)
+}
+```
+
+```{r plot_p_all, fig.width = 4, fig.height = 2.5, fig.cap = "Posterior distributions for the mean proliferation rate, for different numbers of fitted compartments, with perfect labelling and a prior for p between 0 and 1.  kh denotes fitting a model with kinetic heterogeneity.\\label{fig:plot_p_all}"}
+plot_p_all(n_compartments, prior_width = 1)
+```
+
+```{r plot_p_all_wide_prior, fig.width = 4, fig.height = 2.5, fig.cap = "Posterior distributions for the mean proliferation rate, for different numbers of fitted compartments, with perfect labelling and a prior for p between 0 and 10.  kh denotes fitting a model with kinetic heterogeneity.\\label{fig:plot_p_all_wide_prior}"}
+plot_p_all(seq_len(n_compartments_max), prior_width = 10)
+```
+
 ```{r eval = FALSE}
 get_bar_p_quantiles <- function(n_compartments, p1, p2, alpha1, prior_width) {
   fit <- fit_wrapper(n_compartments, p1, p2, alpha1, prior_width, eval = FALSE) %>%
@@ -201,7 +262,7 @@ get_bar_p_quantiles <- function(n_compartments, p1, p2, alpha1, prior_width) {
   } else {
     bar_p_name <- "p"
   }
-
+  
   p <- fit$fit %>% extract_fit(0, bar_p_name, drop = TRUE)
   quantiles <- quantile(p, probs = c(0.025, 0.5, 0.975))
   bar_p <- p1 * alpha1 + p2 * (1 - alpha1)
@@ -215,6 +276,7 @@ fit_grid <- fit_grid %>%
   select(-eval)
 
 bar_p_quantiles <- fit_grid %>%
+  filter(n_compartments <= 2) %>%
   apply_named_args(1, get_bar_p_quantiles) %>%
   do.call(rbind, .) %>%
   as_tibble %>%
@@ -229,6 +291,8 @@ levels(bar_p_quantiles$model) <- c(1, "kh", 2)
 saveRDS(bar_p_quantiles, quantiles_filename)
 ```
 
+## Fig 10C and 10D
+
 ```{r error_prior_width, fig.width = 8, fig.height = 3, fig.cap = "Percentage error in the estimated proliferation rate by model and prior width."}
 bar_p_quantiles %>%
   ggplot(aes(x = prior_width, y = rel_error, group = prior_width)) +
@@ -240,7 +304,7 @@ bar_p_quantiles %>%
   ylab("Error in estimated \n mean proliferation rate (%)")
 ```
 
-```{r error_prior_width, fig.width = 8, fig.height = 3, fig.cap = "Percentage error in the estimated proliferation rate by model and prior width."}
+```{r fig.width = 8, fig.height = 3}
 bar_p_quantiles %>%
   ggplot(aes(x = prior_width, y = rel_range, group = prior_width)) +
   facet_wrap(~model, nrow = 1, scales = "free") +

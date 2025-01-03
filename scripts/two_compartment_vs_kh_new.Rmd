@@ -358,6 +358,8 @@ bar_p_quantiles %>%
   ylab("Error in estimate (%)")
 ```
 
+## Fig 9
+
 ```{r subset_p_low_alpha, fig.width = 8, fig.height = 4, fig.cap = "Percentage error in the median estimate of the mean proliferation rate for each model, for the subset of simulations where p1 < 10p2. Simulations are divided into subplots by the value of alpha1 (top of plots).\\label{fig:subset_p_low_alpha}"}
 bar_p_quantiles <- bar_p_quantiles %>%
   mutate(p1_high = p1 > 10*p2)

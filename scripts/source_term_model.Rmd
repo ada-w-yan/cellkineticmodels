@@ -44,8 +44,6 @@ samples_filename <- paste0(dir_name, "samples.rds")
 pred_filename <- paste0(dir_name, "pred.rds")
 sim_data_filename <- paste0(dir_name, "sim_data.rds")
 p_filename <- paste0(dir_name, "p.rds")
-fit_homogeneous_filename <- paste0(dir_name, "fit_homogeneous.rds")
-sim_data_homogeneous_filename <- paste0(dir_name, "sim_data_homogeneous.rds")
 ```
 
 # Figure 2
@@ -60,117 +58,10 @@ label_end <- 49.; # end of labelling period
 
 f <- 0.032 # fraction of label in drinking water
 delta <- 0.070 # turnover rate of body water
-b_w <- 5.82#4.41 # normalisation for body water
+b_w <- 5.82 # normalisation for body water
 
-p_E <- 2.39e-3#2.89e-3
-dstar_E <- 7.75e-3#2.10e-2
-p_C <- 4.5e-4
-dstar_C <- 3e-4
-Delta <- p_C - dstar_C # kinetic homogeneity
-k <- if(k0) 0 else 10 
-d_E <- (dstar_E - p_E) * .9 + p_E # enforce p_E < d_E < dstar_E
-C_on_E <- (d_E - p_E) / Delta / 2^k
 pred_times <- c(3, seq(0, 98, by = 7)) %>% sort # times for which to generate data
 sigma_L <- 0.005 # standard deviation of lognormal noise on data
-data_list <- list(f = f,
-                  delta = delta,
-                  b_w = b_w,
-                  p_C = array(p_C),
-                  dstar_C = array(dstar_C),
-                  p_E = array(p_E),
-                  dstar_E = array(dstar_E),
-                  Delta = array(Delta),
-                  two_k_minus_one = array(2^k - 1),
-                  C_on_E = array(C_on_E),
-                  label_end = label_end,
-                  T = length(pred_times),
-                  ts = pred_times,
-                  N_samples = 1)
-```
-
-```{r eval = FALSE}
-pred <- make_pred(pred_model, data_list) # simulate fraction of label in upstream and downstream compartments
-
-term_names <- paste0(c("Chat" ,"Ehat"))
-terms <- lapply(term_names, extract_pred, pred = pred, N_samples = 1)
-terms <- tibble(t = pred_times, Chat = as.numeric(terms[[1]]), Ehat = as.numeric(terms[[2]]))
-
-# add lognormal noise
-sim_data_homogeneous <- terms %>%
-  mutate_at(c("Chat", "Ehat"), function(x) vnapply(x, function(y) rlnorm(1, log(y), sigma_L))) %>%
-  mutate_at(c("Chat", "Ehat"), function(x) pmax(x, 0))
-saveRDS(sim_data_homogeneous, sim_data_homogeneous_filename)
-```
-
-## Fit one-compartment model to data
-
-```{r}
-sim_data_homogeneous <- readRDS(sim_data_homogeneous_filename) %>%
-  filter(t > 0)
-fit_data_list <- c(list(T = nrow(sim_data_homogeneous),
-                        ts = sim_data_homogeneous$t,
-                        L = sim_data_homogeneous$Ehat,
-                        sigma = sigma_L,
-                        frac = data_list$f),
-                   data_list[c("label_end", "delta")])
-
-model <- "lymphocyte_model_fixed_U_lognormal_noise"
-```
-
-```{r eval = FALSE}
-fit <- fit_stan_defaults(model, fit_data_list)
-saveRDS(fit, fit_homogeneous_filename)
-```
-
-## Plot marginal posterior distributions (Fig 2)
-
-```{r posterior_homogeneous, eval = FALSE, fig.width = 6, fig.height = 3, fig.cap = "Marginal posterior distributions for (left) $p_E$ and (right) $d^*_E$ when fitting the one-compartment model to the downstream data. The red line shows the values of (left) the mean turnover rate across all downstream cells and (right) the disappearance rate of labelled downstream cells used to simulate the data, while the blue line shows the proliferation rate of downstream cells used to simulate the data. \\label{fig:posterior_homogeneous}"}
-fit <- readRDS(fit_homogeneous_filename)
-fit_matrix <- as.matrix(fit$fit)
-pred_single <- get_max_LL_row(fit$fit)
-pred_single <- pred_single[grep("Lhat", names(pred_single))]
-pred_tibble <- tibble(t = c(0, fit$data$ts),
-                      Lhat = c(0, pred_single))
-p <- fit_matrix[,"pb_w"] / b_w
-theoretical_turnover <- Delta * 2^k * C_on_E + p_E
-theoretical_production_rate_by_division <- Delta * (2^k - 1) * C_on_E + p_E
-plot_tibble <- tibble(p = p, dstar = fit_matrix[,"dstar"])
-
-palette1 <- ggpubfigs::friendly_pal("contrast_three")
-light_grey <- "#808B96"
-
-m <- ggplot(pred_tibble) +
-  geom_line(aes(x = t, y = Lhat)) +
-  geom_point(data = sim_data_homogeneous, aes(x = t, y = Ehat)) +
-  theme_bw() +
-  xlab("Time (days)") +
-  ylab("Fraction of label") +
-  labs(tag = ifelse(k0, "D", "A"))
-
-g <- ggplot(plot_tibble, aes(x = p)) +
-  geom_histogram(fill = light_grey) +
-  geom_vline(xintercept = theoretical_production_rate_by_division, linetype = "solid", color = palette1[2]) +
-  geom_vline(xintercept = theoretical_turnover, linetype = "dashed", color = palette1[1]) +
-  geom_vline(xintercept = p_E, linetype = "dotdash", color = palette1[3]) +
-  theme_bw() +
-  xlab(latex2exp::TeX("$\\hat{p_E}")) +
-  ylab("Frequency") +
-  expand_limits(x = 0) +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
-  labs(tag = ifelse(k0, "E", "B"))
-
-h <- ggplot(plot_tibble, aes(x = dstar)) +
-  geom_histogram(fill = light_grey) +
-  geom_vline(xintercept = dstar_E, linetype = "dashed", color = palette1[1]) +
-  theme_bw() +
-  xlab(latex2exp::TeX("$\\hat{d^*_E}$")) +
-  ylab("Frequency") +
-  expand_limits(x = 0) +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
-  labs(tag = ifelse(k0, "F", "C"))
-
-g1 <- gridExtra::grid.arrange(m, g, h, nrow = 1)
-ggsave(paste0(dir_name, "fit_homogeneous.pdf"), g1, width = 6, height = 2)
 ```
 
 # Kinetically heterogeneous upstream compartment
@@ -299,6 +190,17 @@ fit_single <- function(run1, eval = TRUE) {
 invisible(lapply(seq_len(N_samples), fit_single, eval = TRUE))
 ```
 
+## Compile file with sampled and fitted values
+
+```{r}
+samples <- readRDS(samples_filename) %>%
+  as.data.frame %>% as_tibble %>%
+  mutate(run = seq_len(nrow(samples)),
+         turnover = (two_k_minus_one + 1) * Delta * C_on_E + p_E,
+         production_rate_by_division = two_k_minus_one * Delta * C_on_E + p_E,
+         influx_ratio = 1/(1 + p_E/Delta/(two_k_minus_one + 1) / C_on_E))
+```
+
 ```{r eval = FALSE}
 get_p_median <- function(run1) {
   fit <- run1 %>% fit_single(eval = FALSE) %>% readRDS
@@ -312,17 +214,6 @@ get_p_median <- function(run1) {
 p <- lapply(seq_len(N_samples), get_p_median) %>%
   do.call(rbind, .)
 saveRDS(p, p_filename)
-```
-
-## Compile file with sampled and fitted values
-
-```{r}
-samples <- readRDS(samples_filename) %>%
-  as.data.frame %>% as_tibble %>%
-  mutate(run = seq_len(nrow(samples)),
-         turnover = (two_k_minus_one + 1) * Delta * C_on_E + p_E,
-         production_rate_by_division = two_k_minus_one * Delta * C_on_E + p_E,
-         influx_ratio = 1/(1 + p_E/Delta/(two_k_minus_one + 1) / C_on_E))
 ```
 
 ```{r eval = FALSE}
@@ -347,7 +238,7 @@ sum_stats <- lapply(seq_len(N_samples), get_sum_stats) %>%
 write.csv(sum_stats, paste0(dir_name, "source_term_model_estimated_pars.csv"), row.names = FALSE)
 ```
 
-# Fig 3
+## Fig 3
 
 ```{r fig.width = 12, fig.height = 3}
 p <- readRDS(p_filename) %>%
@@ -382,204 +273,87 @@ make_plot <- function(p, diag_tibble, x_var, y_var, x_lab, y_lab) {
 
 proliferation_plot <- make_plot(p, diag_tibble, "p_E", "p_median",
                                 "True value of \n proliferation rate \n (per day)",
-                                latex2exp::TeX("$\\hat{p}$ (per day)"))#,
-# ifelse(k0, "E", "A"))
+                                latex2exp::TeX("$\\hat{p}$ (per day)"))
 
 turnover_plot <- make_plot(p, diag_tibble, "turnover", "p_median",
                            "True value of \n turnover rate \n (per day)",
                            latex2exp::TeX("$\\hat{p}$ (per day)"))
-# ifelse(k0, "F", "B"))
 
 production_plot <- make_plot(p, diag_tibble, "production_rate_by_division", "p_median",
                              "True value of \n production rate by \n division (per day)",
                              latex2exp::TeX("$\\hat{p}$ (per day)"))
-# ifelse(k0, "G", "C"))
 
 dstar_plot <- make_plot(p, diag_tibble, "dstar_E", "dstar_median",
                         "True value of \n disappearance  rate of \n labelled cells (per day)",
                         latex2exp::TeX("$\\hat{d^*}$ (per day)"))
-# ifelse(k0, "H", "D"))
-# turnover_plot
+
 g1 <- gridExtra::grid.arrange(proliferation_plot, turnover_plot, production_plot, dstar_plot, nrow = 1)
 ggsave(paste0(dir_name, "fit_one_compartment_lhs.pdf"), g1, width = 12, height = 3)
+g1
 ```
 
-```{r}
+## Fig 4
+
+```{r fig.width = 5, fig.height = 3}
+dir_name_k0 <- "source_term_model_k0_files/" # save output files and plots here
+dir_name <- "source_term_model_files/"
+
+# filenames for saving
+samples_filename <- paste0(dir_name, "samples.rds")
+samples_k0_filename <- paste0(dir_name_k0, "samples.rds")
+p_k0_filename <- paste0(dir_name_k0, "p.rds")
+p_filename <- paste0(dir_name, "p.rds")
+
+p <- readRDS(p_filename) %>%
+  group_by(run) %>%
+  summarise(p_median = median(p), dstar_median = median(dstar))
+p_k0 <- readRDS(p_k0_filename) %>%
+  group_by(run) %>%
+  summarise(p_median = median(p), dstar_median = median(dstar))
+p <- p %>%
+  bind_rows(p_k0) %>%
+  select(-run) %>%
+  bind_cols(samples) %>%
+    mutate(proliferation_error = abs(p_median - p_E)/p_E * 100,
+         turnover_error = abs(p_median - turnover)/turnover * 100,
+         prod_by_div_error = abs(p_median - production_rate_by_division)/production_rate_by_division * 100,
+         k = log2(two_k_minus_one + 1),
+         log2_k = log2(k))
+
 theor_error <- expand_grid(influx_ratio = seq(0, 1, by = .01),
                            k = seq(0, 20)) %>%
   mutate(proliferation_error = influx_ratio / (1 - influx_ratio) * (2^k-1)/2^k * 100,
-         turnover_error = influx_ratio/2^k * 100)
+         turnover_error = influx_ratio/2^k * 100,
+         prod_by_div_error = 0,
+         log2_k = log2(k))
 
-p <- p %>%
-  mutate(proliferation_error = (p_median - p_E)/p_E * 100,
-         turnover_error = abs(p_median - turnover)/turnover * 100,
-         k = log2(two_k_minus_one + 1))
 g <- ggplot(theor_error) +
-  geom_line(aes(x = influx_ratio, y = proliferation_error, color = k, group = k)) +
-  scale_y_log10("Error in proliferation rate") +
+  geom_line(aes(x = influx_ratio, y = proliferation_error, color = log2_k, group = k)) +
+  scale_y_log10("Error in \n proliferation rate (%)", breaks = 10^seq(-2, 4), labels = scales::label_number()) +
   theme_bw() +
-  geom_point(data = p, aes(x = influx_ratio, y = proliferation_error, color = k, group = k))
-g
-g <- ggplot(theor_error, aes(x = influx_ratio, y = turnover_error, color = k, group = k)) +
+  geom_point(data = p, aes(x = influx_ratio, y = proliferation_error, color = log2_k, group = k), size = .5) +
+  xlab("Influx ratio") +
+  labs(color = "log2(k)")
+ggsave(paste0(dir_name, "proliferation_error.pdf"), g, width = 3.5, height = 2)
+g <- ggplot(theor_error, aes(x = influx_ratio, y = turnover_error, color = log2_k, group = k)) +
   geom_line() +
-    theme_bw() +
-  geom_point(data = p, aes(x = influx_ratio, y = turnover_error, color = k, group = k))
-g
-```
-```{r eval = FALSE, fig.width = 3, fig.height = 3}
-p <- p %>%
-  mutate(proliferation_error = (production_rate_by_division - p_E)/p_E * 100,
-         turnover_error = abs(production_rate_by_division - turnover)/turnover * 100,
-         k = log2(two_k_minus_one + 1),
-         z = influx_ratio/(two_k_minus_one + 1) * 100,
-         y=1/(1/influx_ratio - 1) * 100)
-
-# ggplot(aes(x = influx_ratio, y = y))
-g <- ggplot(p, aes(x = influx_ratio, y = proliferation_error)) +
-  scale_y_log10("Error in proliferation rate") +
   theme_bw() +
-  xlab("Influx ratio")
-if(k0) {
-  g <- g + geom_point()
-} else {
-  g <- g + geom_point(aes(color = k)) +
-    theme(legend.position = "none") +
-    geom_line(aes(y = y))
-}
-
-ggsave(paste0(dir_name, "proliferation_error.pdf"), g, width = 3, height = 3)
+  geom_point(data = p, aes(x = influx_ratio, y = turnover_error, color = log2_k, group = k), size = .5) +
+  xlab("Influx ratio") +
+  ylab("Error in \n turnover rate (%)") +
+  labs(color = "log2(k)")
+ggsave(paste0(dir_name, "turnover_error.pdf"), g, width = 3, height = 2)
 g
 
-g <- ggplot(p, aes(x = influx_ratio, y = turnover_error)) +
-  ylab("Error in turnover rate") +
-  theme_bw() +
-  xlab("Influx ratio")
-if(k0) {
-  g <- g + geom_point()
-} else {
-  g <- g + geom_point(aes(color = k)) +
-    theme(legend.position = "none") +
-    geom_line(aes(y = z, group = k))
-}
-
-# ggsave(paste0(dir_name, "turnover_error.pdf"), g, width = 3, height = 3)
-g
-# if(k0) g <- g + coord_cartesian(xlim = c(-1, 0), ylim = c(-1, 0))
-# # coord_cartesian(xlim = c(0, 1), ylim = c(0, 1))
-# ggsave(paste0(dir_name, "error.pdf"), g, width = 3, height = 3)
-```
-
-```{r eval = FALSE}
-if(k0) {
-  p <- p %>%
-    mutate(est_error = (p_median - turnover)/turnover,
-           theor_error = (production_rate_by_division - turnover)/turnover)
-} else {
-  p <- p %>%
-    mutate(est_error = (p_median - p_E)/p_E,
-           theor_error = (production_rate_by_division - p_E)/p_E)
-}
-
-g <- make_plot(p, diag_tibble, "theor_error", "est_error",
-               "Theoretical error",
-               "Estimated error",
-               "")# +
-if(k0) g <- g + coord_cartesian(xlim = c(-1, 0), ylim = c(-1, 0))
-# coord_cartesian(xlim = c(0, 1), ylim = c(0, 1))
-ggsave(paste0(dir_name, "error.pdf"), g, width = 3, height = 3)
-g
-```
-
-```{r}
-p <- p %>%
-  mutate(Delta_C_on_E = Delta*C_on_E,
-         dstar_diff = Delta_C_on_E/production_rate_by_division,
-         dstar_error = (dstar_median - dstar_E)/dstar_E,
-         upper_bound_dstar_diff = p_C * C_on_E / p_median)
-
-ggplot(p, aes(x = upper_bound_dstar_diff, y = dstar_error)) + geom_point() +
-  coord_cartesian(xlim = c(0, 5))
-if(k0) {
-  dstar_diff_breaks <- c(0, 1, 2, 5, Inf)
-  upper_bound_dstar_diff_breaks <- c(0, 1, 2, 5, Inf)
-} else {
-  dstar_diff_breaks <- c(0, 1e-4, 1e-3, 1e-2, 1e-1, 1)
-  upper_bound_dstar_diff_breaks <- c(0, 1e-4, 1e-3, 1e-2, 1e-1, 1, Inf)
-}
-
-dstar_plot <- p %>%
-  select(dstar_diff, upper_bound_dstar_diff, dstar_error) %>%
-  mutate(dstar_cat = cut(dstar_diff, breaks = dstar_diff_breaks),
-         upper_bound_dstar_cat = cut(upper_bound_dstar_diff, breaks = upper_bound_dstar_diff_breaks),
-         dstar_error = abs(dstar_error) * 100)
-
-if(k0) {
-  x_lab <- "$r\\frac{\\bar{C}}{\\bar{E}}/p_E$"
-} else {
-  x_lab <- "$r\\frac{\\bar{C}}{\\bar{E}}/[(2^k - 1) r\\frac{\\bar{C}}{\\bar{E}} + p_E]$"
-}
-x_lab_upper <- "$p_C\\frac{\\bar{C}}{\\bar{E}}/\\hat{p_E}$"
-
-g <- ggplot(dstar_plot, aes(x = dstar_cat)) +
-  geom_boxplot(aes(y = dstar_error)) +
-  theme_bw() +
-  xlab(latex2exp::TeX(x_lab)) +
-  ylab(latex2exp::TeX("\\textrm{Error in} $\\hat{d^*_E} (\\%)$")) +
-  expand_limits(y = 100) +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
-ggsave(paste0(dir_name, "dstar_error.pdf"), g, width = 3, height = 3)
-
-g <- ggplot(dstar_plot, aes(x = upper_bound_dstar_cat)) +
-  geom_boxplot(aes(y = dstar_error)) +
-  theme_bw() +
-  xlab(latex2exp::TeX(x_lab_upper)) +
-  ylab(latex2exp::TeX("\\textrm{Error in} $\\hat{d^*_E} (\\%)$")) +
-  expand_limits(y = 100) +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
-ggsave(paste0(dir_name, "upper_dstar_error.pdf"), g, width = 3, height = 3)
-g
-```
-
-```{r unused plots, eval = FALSE}
-ggplot(p, aes(x = p_E, y = Delta_C_on_E)) + geom_point() +
-  theme_bw() +
-  theme(aspect.ratio = 1) +
-  coord_cartesian(xlim = c(0, 0.05), ylim = c(0, 0.05)) 
-x_max <- p %>%
-  select(dstar_E, dstar_median) %>%
-  as.matrix %>%
-  max
-ggplot(p, aes(x = dstar_E, y = dstar_median)) +
-  geom_point(aes(color = dstar_diff)) +
-  geom_line(data = diag_tibble, aes(x = x, y = x)) +
-  theme_bw() +
-  coord_cartesian(xlim = c(0, x_max), ylim = c(0, x_max)) +
-  theme(aspect.ratio = 1) +
-  xlab("True value of disappearance rate \n of labelled cells (per day)") +
-  ylab(latex2exp::TeX("$\\hat{d^*_E}$ (per day)"))
-
-ggplot(p, aes(x = dstar_diff, y = dstar_error)) +
-  geom_point()# +
-# coord_cartesian(xlim = c(0, 5))
-
-get_prctile_dstar_diff <- function(p, dstar_diff_thres) {
-  p %>%
-    mutate(dstar_error = -dstar_error) %>%
-    filter(dstar_diff <= dstar_diff_thres) %>%
-    pull(dstar_error) %>%
-    quantile(probs = 0.95)
-}
-
-roc_tibble <- tibble(dstar_diff = seq(.25, 5, by = .25)) %>%
-  mutate(roc = vapply(dstar_diff, get_prctile_dstar_diff, numeric(1), p = p))
-
-ggplot(roc_tibble, aes(x = dstar_diff, y = roc)) +
+g <- ggplot(theor_error, aes(x = influx_ratio, y = prod_by_div_error, color = log2_k, group = k)) +
   geom_line() +
-  coord_cartesian(xlim = c(0, 5), ylim = c(0, 1))
-```
-
-```{r}
-
+  theme_bw() +
+  geom_point(data = p, aes(x = influx_ratio, y = prod_by_div_error, color = log2_k, group = k), size = .5) +
+  xlab("Influx ratio") +
+  ylab("Error in production \n rate by division (%)") +
+  labs(color = "log2(k)")
+ggsave(paste0(dir_name, "prod_by_div_error.pdf"), g, width = 3, height = 2)
+g
 ```
 
 ```{r}
