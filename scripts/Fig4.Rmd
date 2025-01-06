@@ -1,0 +1,102 @@
+---
+title: "Upstream and downstream compartments: Fig 4"
+author: "Ada Yan"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    fig_caption: TRUE
+    keep_tex: yes
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, echo = FALSE)
+```
+
+```{r include = FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+# load R package with model fitting functions
+devtools::load_all("~/git_repos/cellkineticmodels/") # change this to the directory of the git repository
+# working directory should be scripts/ relative to the directory of the git repository
+# i.e. the folder this vignette is in
+```
+
+## Fig 4
+
+```{r fig.width = 5, fig.height = 3}
+dir_name_k0 <- "source_term_model_k0_files/" # save output files and plots here
+dir_name <- "source_term_model_files/"
+
+# filenames for saving
+samples_filename <- paste0(dir_name, "samples.rds")
+samples_k0_filename <- paste0(dir_name_k0, "samples.rds")
+p_k0_filename <- paste0(dir_name_k0, "p.rds")
+p_filename <- paste0(dir_name, "p.rds")
+
+samples <- readRDS(samples_filename) %>%
+  as_tibble()
+samples_k0 <- readRDS(samples_k0_filename) %>%
+  as_tibble()
+
+samples <- bind_rows(samples, samples_k0) %>%
+  mutate(turnover = (two_k_minus_one + 1) * Delta * C_on_E + p_E,
+         production_rate_by_division = two_k_minus_one * Delta * C_on_E + p_E,
+         influx_ratio = 1/(1 + p_E/Delta/(two_k_minus_one + 1) / C_on_E))
+
+p <- readRDS(p_filename) %>%
+  group_by(run) %>%
+  summarise(p_median = median(p), dstar_median = median(dstar))
+p_k0 <- readRDS(p_k0_filename) %>%
+  group_by(run) %>%
+  summarise(p_median = median(p), dstar_median = median(dstar))
+p <- p %>%
+  bind_rows(p_k0) %>%
+  select(-run) %>%
+  bind_cols(samples) %>%
+    mutate(proliferation_error = abs(p_median - p_E)/p_E * 100,
+         turnover_error = abs(p_median - turnover)/turnover * 100,
+         prod_by_div_error = abs(p_median - production_rate_by_division)/production_rate_by_division * 100,
+         k = log2(two_k_minus_one + 1),
+         log2_k = log2(k))
+
+theor_error <- expand_grid(influx_ratio = seq(0, 1, by = .01),
+                           k = seq(0, 20)) %>%
+  mutate(proliferation_error = influx_ratio / (1 - influx_ratio) * (2^k-1)/2^k * 100,
+         turnover_error = influx_ratio/2^k * 100,
+         prod_by_div_error = 0,
+         log2_k = log2(k))
+
+g <- ggplot(theor_error) +
+  geom_line(aes(x = influx_ratio, y = proliferation_error, color = log2_k, group = k)) +
+  scale_y_log10("Error in \n proliferation rate (%)", breaks = 10^seq(-2, 4), labels = scales::label_number()) +
+  theme_bw() +
+  geom_point(data = p, aes(x = influx_ratio, y = proliferation_error, color = log2_k, group = k), size = .5) +
+  xlab("Influx ratio") +
+  labs(color = "log2(k)")
+ggsave(paste0(dir_name, "proliferation_error.pdf"), g, width = 3.5, height = 2)
+g
+
+g <- ggplot(theor_error, aes(x = influx_ratio, y = turnover_error, color = log2_k, group = k)) +
+  geom_line() +
+  theme_bw() +
+  geom_point(data = p, aes(x = influx_ratio, y = turnover_error, color = log2_k, group = k), size = .5) +
+  xlab("Influx ratio") +
+  ylab("Error in \n turnover rate (%)") +
+  labs(color = "log2(k)")
+ggsave(paste0(dir_name, "turnover_error.pdf"), g, width = 3, height = 2)
+g
+
+g <- ggplot(theor_error, aes(x = influx_ratio, y = prod_by_div_error, color = log2_k, group = k)) +
+  geom_line() +
+  theme_bw() +
+  geom_point(data = p, aes(x = influx_ratio, y = prod_by_div_error, color = log2_k, group = k), size = .5) +
+  xlab("Influx ratio") +
+  ylab("Error in production \n rate by division (%)") +
+  labs(color = "log2(k)")
+ggsave(paste0(dir_name, "prod_by_div_error.pdf"), g, width = 3, height = 2)
+g
+```
+
+```{r}
+```
